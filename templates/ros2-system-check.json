@@ -1,0 +1,48 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "ROS 2 System Check",
+  "saved_at": "2026-06-12T00:00:00",
+  "entrypoint": {
+    "node_id": "check",
+    "port": "report"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Detect how ROS 2 runs on this machine: native ros2 CLI or the Docker helper container (ros:jazzy). Cook the report port. No ROS installed? It tells you exactly what to set up. First Docker-backed cook starts the helper container (a few seconds).",
+    "color": "#2e9fe6"
+  },
+  "node_meta": {
+    "check": {
+      "id": "check",
+      "type": "ROS2SystemCheck",
+      "params": {
+        "refresh": true
+      },
+      "pos": [
+        320,
+        200
+      ],
+      "inputs": [
+        "refresh"
+      ],
+      "outputs": [
+        "available",
+        "backend",
+        "report"
+      ],
+      "input_types": {
+        "refresh": "Bool"
+      },
+      "output_types": {
+        "available": "Bool",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "refresh": true
+      }
+    }
+  },
+  "edges": []
+}

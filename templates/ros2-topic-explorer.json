@@ -1,0 +1,143 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "ROS 2 Topic Explorer",
+  "saved_at": "2026-06-12T00:00:00",
+  "entrypoint": {
+    "node_id": "echo",
+    "port": "report"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Start a background demo publisher on /chatter, then echo a message from it. Cook echo's report port: the publisher starts and waits for discovery (wired via trigger), then echo reads the message. Swap the topic to point at a real robot. Run the demo publisher with action=stop to clean up.",
+    "color": "#2e9fe6"
+  },
+  "node_meta": {
+    "demo_pub": {
+      "id": "demo_pub",
+      "type": "ROS2DemoPublisher",
+      "params": {
+        "action": "start",
+        "topic": "/chatter",
+        "message": "hello from Blacknode",
+        "rate": 2.0
+      },
+      "pos": [
+        120,
+        200
+      ],
+      "inputs": [
+        "trigger",
+        "action",
+        "topic",
+        "message",
+        "rate"
+      ],
+      "outputs": [
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "topic": "Text",
+        "message": "Text",
+        "rate": "Float"
+      },
+      "output_types": {
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "topic": "/chatter",
+        "message": "hello from Blacknode",
+        "rate": 2.0
+      }
+    },
+    "echo": {
+      "id": "echo",
+      "type": "ROS2TopicEcho",
+      "params": {
+        "topic": "/chatter",
+        "msg_type": "std_msgs/msg/String",
+        "count": 1,
+        "timeout": 15.0
+      },
+      "pos": [
+        480,
+        200
+      ],
+      "inputs": [
+        "trigger",
+        "topic",
+        "msg_type",
+        "count",
+        "timeout"
+      ],
+      "outputs": [
+        "messages",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "topic": "Text",
+        "msg_type": "Text",
+        "count": "Int",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "messages": "List",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "topic": "/chatter",
+        "msg_type": "",
+        "count": 1,
+        "timeout": 10.0
+      }
+    },
+    "topics": {
+      "id": "topics",
+      "type": "ROS2TopicList",
+      "params": {
+        "show_types": true
+      },
+      "pos": [
+        480,
+        380
+      ],
+      "inputs": [
+        "trigger",
+        "show_types"
+      ],
+      "outputs": [
+        "topics",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "show_types": "Bool"
+      },
+      "output_types": {
+        "topics": "List",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "show_types": true
+      }
+    }
+  },
+  "edges": [
+    {
+      "from": "demo_pub",
+      "from_port": "report",
+      "to": "echo",
+      "to_port": "trigger"
+    },
+    {
+      "from": "demo_pub",
+      "from_port": "report",
+      "to": "topics",
+      "to_port": "trigger"
+    }
+  ]
+}

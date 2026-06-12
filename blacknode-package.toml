@@ -1,0 +1,12 @@
+[package]
+name = "blacknode-ros2"
+version = "0.1.0"
+description = "ROS 2 nodes: topics, services, interfaces, publishing, and demo publishers — via native ros2 or a Docker container."
+requires-blacknode = ">=0.1.0"
+
+[categories]
+"ROS 2" = "#2e9fe6"
+
+[dependencies]
+pip = []
+docker = ["ros:jazzy"]
