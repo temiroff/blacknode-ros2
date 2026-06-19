@@ -1,12 +1,12 @@
 [package]
 name = "blacknode-ros2"
 version = "0.1.0"
-description = "ROS 2 nodes: topics, services, interfaces, publishing, and demo publishers — via native ros2 or a Docker container."
+description = "ROS 2 topics, services, visual tests, and a safety-gated SO-ARM101 LeRobot bridge."
 requires-blacknode = ">=0.1.0"
 
 [categories]
 "ROS 2" = "#2e9fe6"
 
 [dependencies]
-pip = []
+pip = ["PyYAML>=6"]
 docker = ["ros:jazzy"]

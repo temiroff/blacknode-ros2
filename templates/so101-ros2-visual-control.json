@@ -1,0 +1,194 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "SO-ARM101 ROS 2 Visual Control",
+  "saved_at": "2026-06-12T00:00:00",
+  "entrypoint": {
+    "node_id": "result",
+    "port": "value"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Safe visual SO-ARM101 control demo. Renders the LeRobot/ROS 2 architecture and a six-joint pose, then proves the physical command is blocked by default.",
+    "color": "#f97316",
+    "required_packages": ["blacknode-ros2"]
+  },
+  "node_meta": {
+    "bridge_plan": {
+      "id": "bridge_plan",
+      "type": "SO101ROS2BridgePlan",
+      "params": {
+        "serial_port": "COM3",
+        "robot_id": "my_so101",
+        "camera_index": 0,
+        "camera_name": "front",
+        "max_relative_target": 5.0,
+        "motion_enabled": false
+      },
+      "pos": [40, 120],
+      "inputs": [
+        "serial_port",
+        "robot_id",
+        "camera_index",
+        "camera_name",
+        "max_relative_target",
+        "motion_enabled"
+      ],
+      "outputs": ["architecture", "config", "launch_command", "checklist"],
+      "input_types": {
+        "serial_port": "Text",
+        "robot_id": "Text",
+        "camera_index": "Int",
+        "camera_name": "Text",
+        "max_relative_target": "Float",
+        "motion_enabled": "Bool"
+      },
+      "output_types": {
+        "architecture": "Image",
+        "config": "Dict",
+        "launch_command": "Text",
+        "checklist": "List"
+      },
+      "input_defaults": {
+        "serial_port": "COM3",
+        "robot_id": "my_so101",
+        "camera_index": 0,
+        "camera_name": "front",
+        "max_relative_target": 5.0,
+        "motion_enabled": false
+      }
+    },
+    "pose_preview": {
+      "id": "pose_preview",
+      "type": "SO101JointCommandPreview",
+      "params": {
+        "shoulder_pan": 0.0,
+        "shoulder_lift": -20.0,
+        "elbow_flex": 35.0,
+        "wrist_flex": 15.0,
+        "wrist_roll": 0.0,
+        "gripper": 25.0
+      },
+      "pos": [920, 120],
+      "inputs": [
+        "bridge",
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll",
+        "gripper"
+      ],
+      "outputs": ["preview", "command", "payload"],
+      "input_types": {
+        "bridge": "Dict",
+        "shoulder_pan": "Float",
+        "shoulder_lift": "Float",
+        "elbow_flex": "Float",
+        "wrist_flex": "Float",
+        "wrist_roll": "Float",
+        "gripper": "Float"
+      },
+      "output_types": {
+        "preview": "Image",
+        "command": "Dict",
+        "payload": "Text"
+      },
+      "input_defaults": {
+        "shoulder_pan": 0.0,
+        "shoulder_lift": -20.0,
+        "elbow_flex": 35.0,
+        "wrist_flex": 15.0,
+        "wrist_roll": 0.0,
+        "gripper": 25.0
+      }
+    },
+    "guarded_publish": {
+      "id": "guarded_publish",
+      "type": "SO101JointCommandPublish",
+      "params": {
+        "armed": false
+      },
+      "pos": [1800, 260],
+      "inputs": ["trigger", "command", "armed"],
+      "outputs": ["report"],
+      "input_types": {
+        "trigger": "Any",
+        "command": "Dict",
+        "armed": "Bool"
+      },
+      "output_types": {
+        "report": "Text"
+      },
+      "input_defaults": {
+        "armed": false
+      }
+    },
+    "camera_snapshot": {
+      "id": "camera_snapshot",
+      "type": "ROS2CompressedImageSnapshot",
+      "params": {
+        "topic": "/so101/camera/front/compressed",
+        "timeout": 10.0
+      },
+      "pos": [920, 940],
+      "inputs": ["trigger", "topic", "timeout"],
+      "outputs": ["image", "metadata", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "topic": "Text",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "image": "Image",
+        "metadata": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "topic": "/so101/camera/front/compressed",
+        "timeout": 10.0
+      }
+    },
+    "result": {
+      "id": "result",
+      "type": "Output",
+      "params": {
+        "label": "Physical command safety result"
+      },
+      "pos": [2180, 260],
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {
+        "value": "Any"
+      },
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {
+      "from": "bridge_plan",
+      "from_port": "config",
+      "to": "pose_preview",
+      "to_port": "bridge"
+    },
+    {
+      "from": "pose_preview",
+      "from_port": "payload",
+      "to": "guarded_publish",
+      "to_port": "trigger"
+    },
+    {
+      "from": "pose_preview",
+      "from_port": "command",
+      "to": "guarded_publish",
+      "to_port": "command"
+    },
+    {
+      "from": "guarded_publish",
+      "from_port": "report",
+      "to": "result",
+      "to_port": "value"
+    }
+  ]
+}
