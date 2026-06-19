@@ -8,5 +8,6 @@ requires-blacknode = ">=0.1.0"
 "ROS 2" = "#2e9fe6"
 
 [dependencies]
-pip = ["PyYAML>=6"]
+pip = ["PyYAML>=6", "roslibpy>=1.5"]
+imports = ["yaml", "roslibpy"]
 docker = ["ros:jazzy"]

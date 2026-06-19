@@ -56,9 +56,10 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2ServiceList` | List live services, optionally with types |
 | `ROS2InterfaceShow` | Show a message/service definition — lets AI agents compose valid payloads |
 | `ROS2Command` | Escape hatch: run any `ros2 ...` subcommand and capture the output |
-| `SO101ROS2BridgePlan` | Visualize the SO-ARM101, LeRobot, ROS 2, camera, and safety-gate architecture |
-| `SO101JointCommandPreview` | Render a six-joint arm pose and build a command without sending it |
-| `SO101JointCommandPublish` | Publish a command only when its explicit `armed` gate is true |
+| `ROS2RosbridgeStatus` | Preflight a rosbridge robot connection (roslibpy, WebSocket, optional config) with exact fixes |
+| `ROS2JointState` | Read any robot's current pose from a `JointState` topic (radians or degrees) |
+| `ROS2RotateJoint` | Move one joint on a **real** robot — gated by `armed`, syncs to the current pose, clamps to limits, streams a heartbeat |
+| `ROS2MotionDashboard` | Render before/after joint values so the graph visibly shows the robot moved |
 
 Action nodes carry an optional `trigger` input so you can sequence them in a
 graph (start the publisher → then echo).
@@ -71,9 +72,9 @@ Loadable from the editor's Templates tab:
 - **ROS 2 Live Roundtrip Demo** — press the top-bar **Run** button to start a
   publisher on `/blacknode_demo`, capture a real message, and render a large
   visual dashboard with the message path, pass/fail checks, and graph metrics
-- **SO-ARM101 ROS 2 Visual Control** — renders the physical-control
-  architecture and a joint pose, then shows that command publishing is
-  `BLOCKED` by default
+- **ROS 2 Live Motion Test** — connects to your running rosbridge, reads
+  the live pose, and (once you set `armed=true`) rotates one joint on the real
+  robot, rendering a before/after dashboard that proves it moved
 
 To verify it visually:
 
@@ -157,11 +158,57 @@ Physical motion has three independent software gates:
 
 1. Start the bridge with `--enable-motion`.
 2. Publish `true` to `/so101/enable`.
-3. Set `armed=true` on `SO101JointCommandPublish`.
+3. Publish a position command to `/so101/command` (e.g. with `ROS2TopicPublish`).
 
 A true message on `/so101/stop` latches a software stop until the bridge is
 restarted. This is not a certified emergency stop; keep a physical power
 cutoff within reach and clear the robot workspace before enabling motion.
+
+## Live robot control over rosbridge (universal)
+
+The `ROS2RosbridgeStatus`, `ROS2JointState`, `ROS2RotateJoint`, and
+`ROS2MotionDashboard` nodes drive **any** robot that exposes its joints as
+`sensor_msgs/msg/JointState` over a rosbridge WebSocket, using `roslibpy`.
+Topics, joint name, and units are all node inputs — robot specifics live in
+templates, not in the nodes. This is independent of the bundled
+`scripts/so101_ros2_bridge.py` (native DDS) described above.
+
+| Input | Default | Meaning |
+|---|---|---|
+| `state_topic` | `/joint_states` | `JointState` to read the current pose from |
+| `command_topic` | `/joint_commands` | `JointState` to stream position commands to (radians on the wire) |
+| `config_topic` | (empty) | optional latched `std_msgs/String` JSON with `commands_allowed` + per-joint `lower`/`upper` limits |
+| `units` | `radians` | `radians` (ROS standard) or `degrees` for the values you type and see |
+
+`roslibpy` is installed by **Install prerequisites** in the Packages tab,
+`blacknode packages setup blacknode-ros2`, or `pip install roslibpy` **into the
+Blacknode server environment**. Without it the nodes load and return a
+structured "roslibpy not installed" result, and the Packages tab flags it.
+
+The included **ROS 2 Live Motion Test** template pre-fills these inputs
+(`/joint_states`, `/joint_commands`, `/joint_config`, `degrees`, the `gripper`
+joint); repoint host/port/topics/joint for your robot.
+
+**To move a real robot:**
+
+1. Start a rosbridge server for your robot, serving `ws://127.0.0.1:9090`.
+2. Start your robot's safety-gated command bridge so it accepts commands (for
+   the bundled SO-ARM101 example, see the [SO-ARM101 bridge](#so-arm101-bridge)
+   section below).
+3. In Blacknode, load **ROS 2 Live Motion Test** and press **Run** — the
+   dashboard shows the live pose with `armed=false` (no motion).
+4. Set the `ROS2RotateJoint` node's `armed=true` and recook. It syncs to the
+   current pose, ramps the chosen joint by `delta`, streams the command at
+   `rate_hz` for `hold_seconds`, and reports the before/after angles.
+
+Safety, layered on top of the bridge's own torque/heartbeat gates:
+
+- `armed=false` (default) never opens a connection or sends anything.
+- A read-only bridge (no `--allow-commands`) is refused with a clear message.
+- The first command always equals the current pose, so the arm never jumps.
+- Targets are clamped to the calibration limits reported on `/joint_config`.
+
+Keep a physical power cutoff within reach and clear the workspace before arming.
 
 ## Development
 

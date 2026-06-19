@@ -5,6 +5,7 @@ Integration tests run only when a real backend (native ros2 or Docker) is
 available, and skip cleanly otherwise.
 """
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 import blacknode  # noqa: F401  triggers package discovery
 from blacknode.node import _NODE_REGISTRY
 from blacknode.pkg.blacknode_ros2 import ros2_runtime as rt
+from blacknode.pkg.blacknode_ros2 import rosbridge_runtime as rb
 from blacknode.workflow import validate_workflow
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
@@ -28,9 +30,10 @@ EXPECTED_NODES = [
     "ROS2ServiceList",
     "ROS2InterfaceShow",
     "ROS2Command",
-    "SO101ROS2BridgePlan",
-    "SO101JointCommandPreview",
-    "SO101JointCommandPublish",
+    "ROS2RosbridgeStatus",
+    "ROS2JointState",
+    "ROS2RotateJoint",
+    "ROS2MotionDashboard",
 ]
 
 HAS_BACKEND = rt.detect_backend()["backend"] != "none"
@@ -66,40 +69,6 @@ def test_visual_dashboard_reports_roundtrip_pass():
     assert result["passed"] is True
     assert result["summary"]["topic_ok"] is True
     assert result["dashboard"].startswith("data:image/svg+xml;base64,")
-
-
-def test_so101_visual_plan_and_command_preview():
-    plan = _NODE_REGISTRY["SO101ROS2BridgePlan"]({
-        "serial_port": "COM7",
-        "robot_id": "test_arm",
-        "camera_index": 1,
-        "motion_enabled": False,
-    })
-    assert plan["architecture"].startswith("data:image/svg+xml;base64,")
-    assert plan["config"]["topics"]["command"] == "/so101/command"
-    assert "--enable-motion" not in plan["launch_command"]
-
-    preview = _NODE_REGISTRY["SO101JointCommandPreview"]({
-        "bridge": plan["config"],
-        "shoulder_lift": -20.0,
-        "elbow_flex": 35.0,
-        "gripper": 25.0,
-    })
-    assert preview["preview"].startswith("data:image/svg+xml;base64,")
-    assert preview["command"]["data"] == [0.0, -20.0, 35.0, 0.0, 0.0, 25.0]
-    assert json.loads(preview["payload"])["data"][-1] == 25.0
-
-
-def test_so101_publish_is_blocked_by_default(monkeypatch):
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("ROS backend must not be called while publisher is disarmed")
-
-    monkeypatch.setattr(rt, "run_ros2", fail_if_called)
-    result = _NODE_REGISTRY["SO101JointCommandPublish"]({
-        "armed": False,
-        "command": {"data": [0, 0, 0, 0, 0, 0]},
-    })
-    assert result["report"].startswith("BLOCKED:")
 
 
 def test_no_backend_is_structured_error(monkeypatch):
@@ -154,6 +123,110 @@ def test_compressed_image_snapshot_decodes_ros_yaml(monkeypatch):
     assert result["image"].startswith("data:image/jpeg;base64,")
     assert result["metadata"]["byte_count"] == 4
     assert "captured 4 byte" in result["report"]
+
+
+# --- universal live robot control over rosbridge ----------------------------------
+
+def test_rotate_joint_needs_a_joint_name():
+    result = _NODE_REGISTRY["ROS2RotateJoint"]({"joint": "", "armed": True})
+    assert result["report"].startswith("BLOCKED:")
+    assert result["moved"] is False
+
+
+def test_rotate_joint_blocked_when_disarmed(monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("rosbridge must not be touched while disarmed")
+
+    monkeypatch.setattr(rb, "get_connection", fail_if_called)
+    monkeypatch.setattr(rb, "read_pose", fail_if_called)
+    monkeypatch.setattr(rb, "stream_motion", fail_if_called)
+    result = _NODE_REGISTRY["ROS2RotateJoint"]({"joint": "gripper", "armed": False})
+    assert result["report"].startswith("BLOCKED:")
+    assert result["moved"] is False
+
+
+def test_rotate_joint_refuses_read_only_bridge(monkeypatch):
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+    monkeypatch.setattr(rb, "read_config", lambda *a, **k: {"commands_allowed": False, "joints": {}})
+
+    def fail_if_streamed(*args, **kwargs):
+        raise AssertionError("must not stream commands to a read-only bridge")
+
+    monkeypatch.setattr(rb, "stream_motion", fail_if_streamed)
+    result = _NODE_REGISTRY["ROS2RotateJoint"]({
+        "joint": "gripper", "armed": True, "config_topic": "/joint_config",
+    })
+    assert result["report"].startswith("BLOCKED:")
+    assert "read-only" in result["report"]
+
+
+def test_rotate_joint_streams_and_reports_motion(monkeypatch):
+    # values in radians on the wire; node is asked for degrees
+    start = {"shoulder_pan": 0.0, "gripper": math.radians(25.0)}
+    after = {"shoulder_pan": 0.0, "gripper": math.radians(60.0)}
+    poses = iter([start, after])
+    captured = {}
+
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: next(poses))
+
+    def fake_stream(host, port, command_topic, names, s, t, **kwargs):
+        captured["start"] = s
+        captured["target"] = t
+        return {"ok": True, "sent": 100}
+
+    monkeypatch.setattr(rb, "stream_motion", fake_stream)
+    result = _NODE_REGISTRY["ROS2RotateJoint"]({
+        "joint": "gripper", "delta": 35.0, "units": "degrees", "armed": True,
+    })
+    assert result["moved"] is True
+    assert math.isclose(captured["target"]["gripper"], math.radians(60.0), abs_tol=1e-6)
+    assert result["before"]["gripper"] == 25.0
+    assert "25.00 -> 60.00 degrees" in result["report"]
+
+
+def test_rotate_joint_clamps_to_config_limits(monkeypatch):
+    start = {"gripper": math.radians(90.0)}
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+    monkeypatch.setattr(rb, "read_config", lambda *a, **k: {
+        "commands_allowed": True,
+        "joints": {"gripper": {"lower": 0.0, "upper": math.radians(100.0)}},
+    })
+    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: dict(start))
+    monkeypatch.setattr(rb, "stream_motion", lambda *a, **k: {"ok": True, "sent": 10})
+    result = _NODE_REGISTRY["ROS2RotateJoint"]({
+        "joint": "gripper", "delta": 35.0, "units": "degrees", "armed": True,
+        "config_topic": "/joint_config",
+    })
+    assert math.isclose(result["target"]["gripper"], 100.0, abs_tol=1e-6)
+    assert "clamped from 125.0" in result["report"]
+
+
+def test_live_nodes_structured_error_without_roslibpy(monkeypatch):
+    monkeypatch.setattr(rb, "available", lambda: (False, "roslibpy is not installed"))
+    status = _NODE_REGISTRY["ROS2RosbridgeStatus"]({})
+    assert status["ready"] is False
+    assert "MISSING" in status["report"]
+
+    live = _NODE_REGISTRY["ROS2JointState"]({})
+    assert live["pose"] == {}
+    assert "FAILED" in live["report"]
+
+
+def test_motion_dashboard_renders_before_after():
+    before = {"shoulder_pan": 0.0, "gripper": 25.0}
+    after = {"shoulder_pan": 0.0, "gripper": 60.0}
+    result = _NODE_REGISTRY["ROS2MotionDashboard"]({
+        "joint": "gripper",
+        "before": before,
+        "after": after,
+        "target": {"gripper": 60.0},
+        "moved": True,
+        "units": "degrees",
+    })
+    assert result["dashboard"].startswith("data:image/svg+xml;base64,")
+    assert result["summary"]["delta"] == 35.0
+    assert result["summary"]["moved"] is True
 
 
 # --- integration (needs native ros2 or Docker) ------------------------------------
