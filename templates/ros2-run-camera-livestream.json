@@ -1,0 +1,191 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "ROS 2 Run Camera Livestream",
+  "saved_at": "2026-07-10T00:00:00",
+  "entrypoint": {
+    "node_id": "image_out",
+    "port": "image"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Start any installed ROS 2 camera executable with ros2 run, wait for its image topic, and preview a live MJPEG stream on the canvas. Requires starting Blacknode from a sourced native ROS 2 shell.",
+    "color": "#2e9fe6",
+    "required_packages": ["blacknode-ros2"]
+  },
+  "node_meta": {
+    "check": {
+      "id": "check",
+      "type": "ROS2SystemCheck",
+      "params": {"refresh": true},
+      "pos": [40, 180],
+      "inputs": ["refresh"],
+      "outputs": ["available", "backend", "report"],
+      "input_types": {"refresh": "Bool"},
+      "output_types": {"available": "Bool", "backend": "Text", "report": "Text"},
+      "input_defaults": {"refresh": true}
+    },
+    "camera_run": {
+      "id": "camera_run",
+      "type": "ROS2Run",
+      "params": {
+        "action": "start",
+        "run_id": "camera_driver",
+        "package": "",
+        "executable": "",
+        "arguments": "",
+        "expected_topic": "/camera/image_raw",
+        "wait_seconds": 10.0
+      },
+      "pos": [390, 160],
+      "inputs": [
+        "trigger",
+        "action",
+        "run_id",
+        "package",
+        "executable",
+        "arguments",
+        "expected_topic",
+        "wait_seconds"
+      ],
+      "outputs": ["running", "run_id", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "run_id": "Text",
+        "package": "Text",
+        "executable": "Text",
+        "arguments": "Text",
+        "expected_topic": "Text",
+        "wait_seconds": "Float"
+      },
+      "output_types": {"running": "Bool", "run_id": "Text", "report": "Text"},
+      "input_defaults": {
+        "action": "start",
+        "run_id": "camera_driver",
+        "package": "",
+        "executable": "",
+        "arguments": "",
+        "expected_topic": "/camera/image_raw",
+        "wait_seconds": 10.0
+      },
+      "input_choices": {"action": ["start", "stop"]}
+    },
+    "topics": {
+      "id": "topics",
+      "type": "ROS2TopicList",
+      "params": {"show_types": true},
+      "pos": [740, 40],
+      "inputs": ["trigger", "show_types"],
+      "outputs": ["topics", "report"],
+      "input_types": {"trigger": "Any", "show_types": "Bool"},
+      "output_types": {"topics": "List", "report": "Text"},
+      "input_defaults": {"show_types": true}
+    },
+    "stream": {
+      "id": "stream",
+      "type": "ROS2ImageStream",
+      "params": {
+        "action": "start",
+        "stream_id": "camera",
+        "topic": "/camera/image_raw",
+        "message_type": "auto",
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_fps": 10.0,
+        "max_width": 960,
+        "jpeg_quality": 80
+      },
+      "pos": [740, 280],
+      "inputs": [
+        "trigger",
+        "action",
+        "stream_id",
+        "topic",
+        "message_type",
+        "host",
+        "port",
+        "max_fps",
+        "max_width",
+        "jpeg_quality"
+      ],
+      "outputs": ["preview", "streaming", "stream_url", "snapshot_url", "stream_id", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "stream_id": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "host": "Text",
+        "port": "Int",
+        "max_fps": "Float",
+        "max_width": "Int",
+        "jpeg_quality": "Int"
+      },
+      "output_types": {
+        "preview": "Image",
+        "streaming": "Bool",
+        "stream_url": "Text",
+        "snapshot_url": "Text",
+        "stream_id": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "stream_id": "camera",
+        "topic": "/camera/image_raw",
+        "message_type": "auto",
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_fps": 10.0,
+        "max_width": 960,
+        "jpeg_quality": 80
+      },
+      "input_choices": {
+        "action": ["start", "stop"],
+        "message_type": ["auto", "raw", "compressed"]
+      }
+    },
+    "image_out": {
+      "id": "image_out",
+      "type": "OutputImage",
+      "params": {},
+      "pos": [1180, 280],
+      "inputs": ["image"],
+      "outputs": ["image"],
+      "input_types": {"image": "Image"},
+      "output_types": {"image": "Image"},
+      "input_defaults": {}
+    },
+    "run_report_out": {
+      "id": "run_report_out",
+      "type": "Output",
+      "params": {"label": "ROS 2 run report"},
+      "pos": [740, 520],
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {"value": "Any"},
+      "output_types": {},
+      "input_defaults": {}
+    },
+    "stream_report_out": {
+      "id": "stream_report_out",
+      "type": "Output",
+      "params": {"label": "ROS 2 stream report"},
+      "pos": [1180, 520],
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {"value": "Any"},
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {"from": "check", "from_port": "report", "to": "camera_run", "to_port": "trigger"},
+    {"from": "camera_run", "from_port": "report", "to": "topics", "to_port": "trigger"},
+    {"from": "camera_run", "from_port": "report", "to": "stream", "to_port": "trigger"},
+    {"from": "camera_run", "from_port": "report", "to": "run_report_out", "to_port": "value"},
+    {"from": "stream", "from_port": "preview", "to": "image_out", "to_port": "image"},
+    {"from": "stream", "from_port": "report", "to": "stream_report_out", "to_port": "value"}
+  ]
+}

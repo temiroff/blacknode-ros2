@@ -1,2 +1,4 @@
 PyYAML>=6
 roslibpy>=1.5
+numpy>=1.24
+pillow>=10

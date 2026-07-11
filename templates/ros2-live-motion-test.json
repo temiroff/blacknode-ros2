@@ -91,7 +91,7 @@
         "state_topic": "/joint_states",
         "command_topic": "/joint_commands",
         "config_topic": "/joint_config",
-        "joint": "gripper",
+        "joint": "",
         "delta": 35.0,
         "units": "degrees",
         "ramp_seconds": 1.5,
@@ -148,7 +148,7 @@
         "state_topic": "/joint_states",
         "command_topic": "/joint_commands",
         "config_topic": "/joint_config",
-        "joint": "gripper",
+        "joint": "",
         "delta": 35.0,
         "units": "degrees",
         "ramp_seconds": 1.5,
@@ -165,7 +165,7 @@
       "id": "dashboard",
       "type": "ROS2MotionDashboard",
       "params": {
-        "joint": "gripper",
+        "joint": "",
         "moved": false,
         "units": "degrees"
       },
@@ -185,7 +185,7 @@
         "summary": "Dict"
       },
       "input_defaults": {
-        "joint": "gripper",
+        "joint": "",
         "moved": false,
         "units": "degrees"
       }

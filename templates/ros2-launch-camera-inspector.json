@@ -1,0 +1,165 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "ROS 2 Launch Camera Inspector",
+  "saved_at": "2026-07-10T00:00:00",
+  "entrypoint": {
+    "node_id": "image_out",
+    "port": "image"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Generic ROS 2 launch, topic, and camera workflow. Fill ROS2Launch package/launch_file for any installed ROS package, or leave launch empty and use it against an already running graph. Captures one raw camera frame from /camera/image_raw.",
+    "color": "#2e9fe6",
+    "required_packages": ["blacknode-ros2"]
+  },
+  "node_meta": {
+    "check": {
+      "id": "check",
+      "type": "ROS2SystemCheck",
+      "params": {"refresh": true},
+      "pos": [40, 160],
+      "inputs": ["refresh"],
+      "outputs": ["available", "backend", "report"],
+      "input_types": {"refresh": "Bool"},
+      "output_types": {"available": "Bool", "backend": "Text", "report": "Text"},
+      "input_defaults": {"refresh": true}
+    },
+    "execs": {
+      "id": "execs",
+      "type": "ROS2PackageExecutables",
+      "params": {
+        "package": "demo_nodes_cpp",
+        "timeout": 30.0
+      },
+      "pos": [400, 40],
+      "inputs": ["trigger", "package", "timeout"],
+      "outputs": ["executables", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "package": "Text",
+        "timeout": "Float"
+      },
+      "output_types": {"executables": "List", "report": "Text"},
+      "input_defaults": {
+        "package": "demo_nodes_cpp",
+        "timeout": 30.0
+      }
+    },
+    "launch": {
+      "id": "launch",
+      "type": "ROS2Launch",
+      "params": {
+        "action": "start",
+        "package": "",
+        "launch_file": "",
+        "arguments": "",
+        "expected_topic": "/camera/image_raw",
+        "wait_seconds": 10.0,
+        "stop_pattern": ""
+      },
+      "pos": [400, 260],
+      "inputs": [
+        "trigger",
+        "action",
+        "package",
+        "launch_file",
+        "arguments",
+        "expected_topic",
+        "wait_seconds",
+        "stop_pattern"
+      ],
+      "outputs": ["launched", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "package": "Text",
+        "launch_file": "Text",
+        "arguments": "Text",
+        "expected_topic": "Text",
+        "wait_seconds": "Float",
+        "stop_pattern": "Text"
+      },
+      "output_types": {"launched": "Bool", "report": "Text"},
+      "input_defaults": {
+        "action": "start",
+        "package": "",
+        "launch_file": "",
+        "arguments": "",
+        "expected_topic": "/camera/image_raw",
+        "wait_seconds": 10.0,
+        "stop_pattern": ""
+      },
+      "input_choices": {"action": ["start", "stop"]}
+    },
+    "topics": {
+      "id": "topics",
+      "type": "ROS2TopicList",
+      "params": {"show_types": true},
+      "pos": [800, 40],
+      "inputs": ["trigger", "show_types"],
+      "outputs": ["topics", "report"],
+      "input_types": {"trigger": "Any", "show_types": "Bool"},
+      "output_types": {"topics": "List", "report": "Text"},
+      "input_defaults": {"show_types": true}
+    },
+    "snapshot": {
+      "id": "snapshot",
+      "type": "ROS2ImageSnapshot",
+      "params": {
+        "topic": "/camera/image_raw",
+        "timeout": 10.0,
+        "output_format": "png",
+        "jpeg_quality": 90
+      },
+      "pos": [800, 300],
+      "inputs": ["trigger", "topic", "timeout", "output_format", "jpeg_quality"],
+      "outputs": ["image", "metadata", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "topic": "Text",
+        "timeout": "Float",
+        "output_format": "Text",
+        "jpeg_quality": "Int"
+      },
+      "output_types": {"image": "Image", "metadata": "Dict", "report": "Text"},
+      "input_defaults": {
+        "topic": "/camera/image_raw",
+        "timeout": 10.0,
+        "output_format": "png",
+        "jpeg_quality": 90
+      },
+      "input_choices": {"output_format": ["png", "jpeg"]}
+    },
+    "topics_out": {
+      "id": "topics_out",
+      "type": "Output",
+      "params": {"label": "ROS 2 topics"},
+      "pos": [1200, 40],
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {"value": "Any"},
+      "output_types": {},
+      "input_defaults": {}
+    },
+    "image_out": {
+      "id": "image_out",
+      "type": "OutputImage",
+      "params": {},
+      "pos": [1200, 300],
+      "inputs": ["image"],
+      "outputs": ["image"],
+      "input_types": {"image": "Image"},
+      "output_types": {"image": "Image"},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {"from": "check", "from_port": "report", "to": "execs", "to_port": "trigger"},
+    {"from": "check", "from_port": "report", "to": "launch", "to_port": "trigger"},
+    {"from": "launch", "from_port": "report", "to": "topics", "to_port": "trigger"},
+    {"from": "launch", "from_port": "report", "to": "snapshot", "to_port": "trigger"},
+    {"from": "topics", "from_port": "topics", "to": "topics_out", "to_port": "value"},
+    {"from": "snapshot", "from_port": "image", "to": "image_out", "to_port": "image"}
+  ]
+}

@@ -1,13 +1,13 @@
 [package]
 name = "blacknode-ros2"
 version = "0.1.0"
-description = "ROS 2 topics, services, visual tests, and a safety-gated SO-ARM101 LeRobot bridge."
+description = "ROS 2 topics, services, launches, camera snapshots/streams, visual tests, and robot control."
 requires-blacknode = ">=0.1.0"
 
 [categories]
 "ROS 2" = "#2e9fe6"
 
 [dependencies]
-pip = ["PyYAML>=6", "roslibpy>=1.5"]
-imports = ["yaml", "roslibpy"]
+pip = ["PyYAML>=6", "roslibpy>=1.5", "numpy>=1.24", "pillow>=10"]
+imports = ["yaml", "roslibpy", "numpy", "PIL"]
 docker = ["ros:jazzy"]

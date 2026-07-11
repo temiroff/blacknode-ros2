@@ -1,0 +1,96 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "ROS 2 Camera Snapshot",
+  "saved_at": "2026-07-10T00:00:00",
+  "entrypoint": {
+    "node_id": "image_out",
+    "port": "image"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Capture one raw sensor_msgs/Image frame from /camera/image_raw and display it in Blacknode. Start any camera publisher first, then Run. Use the topic list node to confirm available camera topics.",
+    "color": "#2e9fe6",
+    "required_packages": ["blacknode-ros2"]
+  },
+  "node_meta": {
+    "check": {
+      "id": "check",
+      "type": "ROS2SystemCheck",
+      "params": {"refresh": true},
+      "pos": [40, 220],
+      "inputs": ["refresh"],
+      "outputs": ["available", "backend", "report"],
+      "input_types": {"refresh": "Bool"},
+      "output_types": {"available": "Bool", "backend": "Text", "report": "Text"},
+      "input_defaults": {"refresh": true}
+    },
+    "topics": {
+      "id": "topics",
+      "type": "ROS2TopicList",
+      "params": {"show_types": true},
+      "pos": [400, 80],
+      "inputs": ["trigger", "show_types"],
+      "outputs": ["topics", "report"],
+      "input_types": {"trigger": "Any", "show_types": "Bool"},
+      "output_types": {"topics": "List", "report": "Text"},
+      "input_defaults": {"show_types": true}
+    },
+    "snapshot": {
+      "id": "snapshot",
+      "type": "ROS2ImageSnapshot",
+      "params": {
+        "topic": "/camera/image_raw",
+        "timeout": 10.0,
+        "output_format": "png",
+        "jpeg_quality": 90
+      },
+      "pos": [400, 320],
+      "inputs": ["trigger", "topic", "timeout", "output_format", "jpeg_quality"],
+      "outputs": ["image", "metadata", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "topic": "Text",
+        "timeout": "Float",
+        "output_format": "Text",
+        "jpeg_quality": "Int"
+      },
+      "output_types": {"image": "Image", "metadata": "Dict", "report": "Text"},
+      "input_defaults": {
+        "topic": "/camera/image_raw",
+        "timeout": 10.0,
+        "output_format": "png",
+        "jpeg_quality": 90
+      },
+      "input_choices": {"output_format": ["png", "jpeg"]}
+    },
+    "image_out": {
+      "id": "image_out",
+      "type": "OutputImage",
+      "params": {},
+      "pos": [800, 320],
+      "inputs": ["image"],
+      "outputs": ["image"],
+      "input_types": {"image": "Image"},
+      "output_types": {"image": "Image"},
+      "input_defaults": {}
+    },
+    "topic_out": {
+      "id": "topic_out",
+      "type": "Output",
+      "params": {"label": "ROS 2 topics"},
+      "pos": [800, 80],
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {"value": "Any"},
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {"from": "check", "from_port": "report", "to": "topics", "to_port": "trigger"},
+    {"from": "check", "from_port": "report", "to": "snapshot", "to_port": "trigger"},
+    {"from": "topics", "from_port": "topics", "to": "topic_out", "to_port": "value"},
+    {"from": "snapshot", "from_port": "image", "to": "image_out", "to_port": "image"}
+  ]
+}

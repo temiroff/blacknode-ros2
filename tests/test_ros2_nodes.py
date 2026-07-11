@@ -23,12 +23,17 @@ EXPECTED_NODES = [
     "ROS2TopicList",
     "ROS2TopicEcho",
     "ROS2CompressedImageSnapshot",
+    "ROS2ImageSnapshot",
+    "ROS2ImageStream",
     "ROS2TopicPublish",
     "ROS2VisualDashboard",
     "ROS2DemoPublisher",
+    "ROS2Launch",
+    "ROS2Run",
     "ROS2NodeList",
     "ROS2ServiceList",
     "ROS2InterfaceShow",
+    "ROS2PackageExecutables",
     "ROS2Command",
     "ROS2RosbridgeStatus",
     "ROS2JointState",
@@ -84,6 +89,23 @@ def test_no_backend_is_structured_error(monkeypatch):
     r = _NODE_REGISTRY["ROS2DemoPublisher"]({"action": "start"})
     assert "FAILED" in r["report"]
 
+    r = _NODE_REGISTRY["ROS2ImageSnapshot"]({"topic": "/camera/image_raw", "timeout": 1.0})
+    assert r["image"] == ""
+    assert "FAILED" in r["report"]
+
+    r = _NODE_REGISTRY["ROS2Launch"]({"package": "demo_nodes_cpp", "launch_file": "talker.launch.py"})
+    assert r["launched"] is False
+    assert "FAILED" in r["report"]
+
+    r = _NODE_REGISTRY["ROS2Run"]({"package": "demo_nodes_cpp", "executable": "talker"})
+    assert r["running"] is False
+    assert "FAILED" in r["report"]
+
+    r = _NODE_REGISTRY["ROS2ImageStream"]({"topic": "/camera/image_raw", "message_type": "raw"})
+    assert r["preview"] == ""
+    assert r["streaming"] is False
+    assert "FAILED" in r["report"]
+
 
 def test_system_check_reports_unavailable(monkeypatch):
     monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "none", "detail": "no ros"})
@@ -108,21 +130,263 @@ def test_echo_keeps_partial_messages_on_timeout(monkeypatch):
     assert "received 2" in r["report"]
 
 
-def test_compressed_image_snapshot_decodes_ros_yaml(monkeypatch):
+def test_compressed_image_snapshot_uses_snapshot_helper(monkeypatch):
     fake = {
         "ok": True,
         "backend": "native",
-        "stdout": "header: {}\nformat: jpeg\ndata: [255, 216, 255, 217]\n---",
-        "stderr": "",
+        "image": "data:image/jpeg;base64,/9j/2Q==",
+        "metadata": {"width": 2, "height": 1, "format": "jpeg", "encoded_byte_count": 4},
     }
-    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: fake)
+    captured = {}
+
+    def fake_capture(**kwargs):
+        captured.update(kwargs)
+        return fake
+
+    monkeypatch.setattr(rt, "capture_image_snapshot", fake_capture)
     result = _NODE_REGISTRY["ROS2CompressedImageSnapshot"]({
         "topic": "/camera/compressed",
         "timeout": 2.0,
     })
     assert result["image"].startswith("data:image/jpeg;base64,")
-    assert result["metadata"]["byte_count"] == 4
-    assert "captured 4 byte" in result["report"]
+    assert result["metadata"]["width"] == 2
+    assert captured["message_type"] == "compressed"
+    assert captured["topic"] == "/camera/compressed"
+    assert "captured compressed image frame" in result["report"]
+
+
+def test_raw_image_snapshot_uses_snapshot_helper(monkeypatch):
+    fake = {
+        "ok": True,
+        "backend": "native",
+        "image": "data:image/png;base64,iVBORw0KGgo=",
+        "metadata": {"width": 2, "height": 1, "encoding": "bgr8", "encoded_byte_count": 8},
+    }
+    captured = {}
+
+    def fake_capture(**kwargs):
+        captured.update(kwargs)
+        return fake
+
+    monkeypatch.setattr(rt, "capture_image_snapshot", fake_capture)
+    result = _NODE_REGISTRY["ROS2ImageSnapshot"]({
+        "topic": "/camera/image_raw",
+        "timeout": 2.0,
+        "output_format": "png",
+    })
+    assert result["image"].startswith("data:image/png;base64,")
+    assert result["metadata"]["width"] == 2
+    assert result["metadata"]["height"] == 1
+    assert result["metadata"]["encoding"] == "bgr8"
+    assert captured["message_type"] == "raw"
+    assert captured["output_format"] == "png"
+    assert "captured 2x1 bgr8 frame" in result["report"]
+
+
+def test_launch_builds_ros2_launch_command(monkeypatch):
+    captured = {}
+
+    def fake_detached(args):
+        captured["args"] = args
+        return {"ok": True, "backend": "native"}
+
+    monkeypatch.setattr(rt, "run_ros2_detached", fake_detached)
+    result = _NODE_REGISTRY["ROS2Launch"]({
+        "package": "camera_bringup",
+        "launch_file": "camera.launch.py",
+        "arguments": "device:=0 view:=false",
+    })
+    assert result["launched"] is True
+    assert captured["args"] == [
+        "launch",
+        "camera_bringup",
+        "camera.launch.py",
+        "device:=0",
+        "view:=false",
+    ]
+    assert "launch running" in result["report"]
+
+
+def test_run_builds_ros2_run_command(monkeypatch):
+    captured = {}
+
+    def fake_managed(key, args):
+        captured["key"] = key
+        captured["args"] = args
+        return {"ok": True, "backend": "native"}
+
+    monkeypatch.setattr(rt, "run_ros2_managed", fake_managed)
+    result = _NODE_REGISTRY["ROS2Run"]({
+        "run_id": "camera_driver",
+        "package": "demo_camera",
+        "executable": "camera_node",
+        "arguments": "--ros-args -r image:=/camera/image_raw",
+    })
+    assert result["running"] is True
+    assert result["run_id"] == "camera_driver"
+    assert captured["key"] == "camera_driver"
+    assert captured["args"] == [
+        "run",
+        "demo_camera",
+        "camera_node",
+        "--ros-args",
+        "-r",
+        "image:=/camera/image_raw",
+    ]
+    assert "ROS 2 run process running" in result["report"]
+
+
+def test_run_waits_for_expected_topic(monkeypatch):
+    monkeypatch.setattr(rt, "run_ros2_managed", lambda key, args: {"ok": True, "backend": "native"})
+    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: {
+        "ok": True,
+        "backend": "native",
+        "stdout": "/camera/image_raw\n/parameter_events\n",
+        "stderr": "",
+    })
+    result = _NODE_REGISTRY["ROS2Run"]({
+        "package": "demo_camera",
+        "executable": "camera_node",
+        "expected_topic": "/camera/image_raw",
+        "wait_seconds": 1.0,
+    })
+    assert result["running"] is True
+    assert "/camera/image_raw is discoverable" in result["report"]
+
+
+def test_run_stop_calls_runtime(monkeypatch):
+    captured = {}
+
+    def fake_stop(key, pattern=""):
+        captured["key"] = key
+        captured["pattern"] = pattern
+        return {"ok": True, "backend": "native", "stopped": 1}
+
+    monkeypatch.setattr(rt, "stop_ros2_managed", fake_stop)
+    result = _NODE_REGISTRY["ROS2Run"]({
+        "action": "stop",
+        "run_id": "camera_driver",
+        "package": "demo_camera",
+        "executable": "camera_node",
+    })
+    assert result["running"] is False
+    assert captured == {"key": "camera_driver", "pattern": "ros2 run demo_camera camera_node"}
+    assert "stopped 1" in result["report"]
+
+
+def test_package_executables_lists_registered_commands(monkeypatch):
+    fake = {
+        "ok": True,
+        "backend": "native",
+        "stdout": "demo_camera camera_node\ndemo_camera calibration_panel\n",
+        "stderr": "",
+    }
+    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: fake)
+    result = _NODE_REGISTRY["ROS2PackageExecutables"]({"package": "demo_camera"})
+    assert result["executables"] == ["demo_camera camera_node", "demo_camera calibration_panel"]
+    assert "OK" in result["report"]
+
+
+def test_image_stream_starts_with_auto_raw_topic(monkeypatch):
+    calls = {}
+
+    def fake_run(args, timeout=15.0):
+        assert args == ["topic", "type", "/camera/image_raw"]
+        return {"ok": True, "backend": "native", "stdout": "sensor_msgs/msg/Image\n", "stderr": ""}
+
+    def fake_start(**kwargs):
+        calls.update(kwargs)
+        return {
+            "ok": True,
+            "backend": "native",
+            "stream_url": "http://127.0.0.1:9010/stream.mjpg",
+            "snapshot_url": "http://127.0.0.1:9010/snapshot.jpg",
+            "health_url": "http://127.0.0.1:9010/health.json",
+            "port": 9010,
+        }
+
+    monkeypatch.setattr(rt, "run_ros2", fake_run)
+    monkeypatch.setattr(rt, "start_image_stream", fake_start)
+    result = _NODE_REGISTRY["ROS2ImageStream"]({
+        "topic": "/camera/image_raw",
+        "message_type": "auto",
+        "stream_id": "cam",
+        "max_fps": 12.0,
+        "max_width": 800,
+    })
+    assert result["preview"] == "http://127.0.0.1:9010/stream.mjpg"
+    assert result["streaming"] is True
+    assert result["stream_url"] == result["preview"]
+    assert calls["message_type"] == "raw"
+    assert calls["topic"] == "/camera/image_raw"
+    assert calls["stream_id"] == "cam"
+    assert calls["max_fps"] == 12.0
+    assert calls["max_width"] == 800
+
+
+def test_image_stream_auto_detects_compressed_topic(monkeypatch):
+    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: {
+        "ok": True,
+        "backend": "native",
+        "stdout": "sensor_msgs/msg/CompressedImage\n",
+        "stderr": "",
+    })
+    monkeypatch.setattr(rt, "start_image_stream", lambda **kwargs: {
+        "ok": True,
+        "backend": "native",
+        "stream_url": "http://127.0.0.1:9011/stream.mjpg",
+        "snapshot_url": "http://127.0.0.1:9011/snapshot.jpg",
+    })
+    result = _NODE_REGISTRY["ROS2ImageStream"]({"topic": "/camera/compressed", "message_type": "auto"})
+    assert result["preview"].endswith("/stream.mjpg")
+    assert result["streaming"] is True
+    assert "compressed" in result["report"]
+
+
+def test_image_stream_stop_calls_runtime(monkeypatch):
+    captured = {}
+
+    def fake_stop(stream_id=""):
+        captured["stream_id"] = stream_id
+        return {"ok": True, "stopped": 1}
+
+    monkeypatch.setattr(rt, "stop_image_stream", fake_stop)
+    result = _NODE_REGISTRY["ROS2ImageStream"]({"action": "stop", "stream_id": "cam"})
+    assert captured["stream_id"] == "cam"
+    assert result["preview"] == ""
+    assert result["streaming"] is False
+    assert "stopped 1" in result["report"]
+
+
+def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):
+    class FakeProc:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(rt, "_terminate_process", lambda proc: True)
+    rt._streams.clear()
+    rt._managed_detached.clear()
+    rt._detached.clear()
+    rt._streams["cam"] = {
+        "proc": FakeProc(),
+        "url": "http://127.0.0.1:9000/stream.mjpg",
+        "snapshot_url": "http://127.0.0.1:9000/snapshot.jpg",
+        "topic": "/camera/image_raw",
+        "message_type": "raw",
+    }
+    rt._managed_detached["camera"] = FakeProc()
+    rt._detached.append(FakeProc())
+
+    result = rt.stop_runtime_services()
+
+    assert result["ok"] is True
+    assert result["stopped"] == {"streams": 1, "managed_runs": 1, "detached": 1}
+    assert rt._streams == {}
+    assert rt._managed_detached == {}
+    assert rt._detached == []
 
 
 # --- universal live robot control over rosbridge ----------------------------------
