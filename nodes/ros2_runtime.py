@@ -420,6 +420,28 @@ def start_image_stream(
     if not script.exists():
         return {"ok": False, "backend": backend, "error": f"stream helper not found: {script}"}
 
+    existing = _streams.get(stream_id)
+    if (
+        existing
+        and existing.get("proc") is not None
+        and existing["proc"].poll() is None
+        and existing.get("topic") == topic
+        and existing.get("message_type") == message_type
+    ):
+        # Subscribing to a ROS topic happens once at process start (rclpy has
+        # no cheap way to hot-swap it); when the topic/message_type this
+        # subscriber cares about hasn't changed, reuse the running bridge
+        # instead of tearing down and reconnecting the camera just because a
+        # downstream node (e.g. a CUDA filter reading this stream) recooked.
+        return {
+            "ok": True,
+            "backend": backend,
+            "stream_id": stream_id,
+            "stream_url": existing.get("url", ""),
+            "snapshot_url": existing.get("snapshot_url", ""),
+            "health_url": existing.get("health_url", ""),
+        }
+
     stop_image_stream(stream_id)
     selected_port = int(port) if int(port) > 0 else _free_port(host)
     args = [
