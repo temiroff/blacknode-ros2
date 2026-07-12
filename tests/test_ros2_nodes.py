@@ -13,6 +13,8 @@ import pytest
 import blacknode  # noqa: F401  triggers package discovery
 from blacknode.node import _NODE_REGISTRY
 from blacknode.pkg.blacknode_ros2 import ros2_runtime as rt
+from blacknode.pkg.blacknode_ros2 import ros2_live as live
+from blacknode.pkg.blacknode_ros2 import ros2_native_runtime as nr
 from blacknode.pkg.blacknode_ros2 import rosbridge_runtime as rb
 from blacknode.workflow import validate_workflow
 
@@ -36,8 +38,15 @@ EXPECTED_NODES = [
     "ROS2PackageExecutables",
     "ROS2Command",
     "ROS2RosbridgeStatus",
+    "ROS2RobotDiscovery",
     "ROS2JointState",
     "ROS2RotateJoint",
+    "ROS2FollowDetectionJoint",
+    "ROS2NativeStatus",
+    "ROS2NativeRobotDiscovery",
+    "ROS2NativeJointState",
+    "ROS2NativeSetJoint",
+    "ROS2NativeFollowDetectionJoint",
     "ROS2MotionDashboard",
 ]
 
@@ -389,6 +398,196 @@ def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):
     assert rt._detached == []
 
 
+# --- native rclpy robot control ---------------------------------------------------
+
+def test_native_status_reports_topics(monkeypatch):
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(nr, "rclpy_version", lambda: "9.9.9")
+    monkeypatch.setattr(nr, "topic_names_and_types", lambda timeout=1.0: [
+        ("/joint_states", ["sensor_msgs/msg/JointState"]),
+        ("/joint_commands", ["sensor_msgs/msg/JointState"]),
+    ])
+    monkeypatch.setattr(nr, "read_config", lambda *a, **k: {"commands_allowed": True})
+
+    result = _NODE_REGISTRY["ROS2NativeStatus"]({})
+
+    assert result["connected"] is True
+    assert result["ready"] is True
+    assert "/joint_states [sensor_msgs/msg/JointState]" in result["topics"]
+    assert "rclpy:     OK" in result["report"]
+
+
+def test_native_robot_discovery_reports_generic_profile(monkeypatch):
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(nr, "read_config", lambda *a, **k: {
+        "commands_allowed": True,
+        "joints": {"shoulder_pan": {"lower": math.radians(-90.0), "upper": math.radians(90.0)}},
+    })
+    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {
+        "shoulder_pan": math.radians(10.0),
+        "elbow": math.radians(25.0),
+    })
+
+    result = _NODE_REGISTRY["ROS2NativeRobotDiscovery"]({"units": "degrees"})
+
+    assert result["connected"] is True
+    assert result["ready"] is True
+    assert result["robot"]["interface"]["kind"] == "native_ros2"
+    assert result["robot"]["pose"]["shoulder_pan"] == 10.0
+    assert result["robot"]["limits"]["shoulder_pan"]["lower"] == -90.0
+    assert "=> READY" in result["report"]
+
+
+def test_native_joint_state_reads_pose(monkeypatch):
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {"gripper": math.radians(45.0)})
+
+    result = _NODE_REGISTRY["ROS2NativeJointState"]({"units": "degrees"})
+
+    assert result["pose"]["gripper"] == 45.0
+    assert result["names"] == ["gripper"]
+    assert "native rclpy" in result["report"]
+
+
+def test_native_set_joint_previews_live_pose_when_disarmed(monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("disarmed must never stream motion commands")
+
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {
+        "shoulder_pan": math.radians(-11.6015625), "gripper": math.radians(25.0),
+    })
+    monkeypatch.setattr(nr, "stream_motion", fail_if_called)
+
+    result = _NODE_REGISTRY["ROS2NativeSetJoint"]({
+        "joint": "shoulder_pan",
+        "position": 0.0,
+        "units": "degrees",
+        "armed": False,
+    })
+
+    assert result["moved"] is False
+    assert result["report"].startswith("PREVIEW")
+    assert math.isclose(result["before"]["shoulder_pan"], -11.6015625, abs_tol=1e-6)
+    assert result["after"] == result["before"]
+    assert math.isclose(result["target"]["shoulder_pan"], 0.0, abs_tol=1e-6)
+
+
+def test_native_set_joint_streams_absolute_target(monkeypatch):
+    start = {"shoulder_pan": 0.0, "gripper": math.radians(25.0)}
+    after = {"shoulder_pan": 0.0, "gripper": math.radians(60.0)}
+    poses = iter([start, after])
+    captured = {}
+
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: next(poses))
+
+    def fake_stream(command_topic, names, s, t, **kwargs):
+        captured["command_topic"] = command_topic
+        captured["names"] = names
+        captured["target"] = t
+        return {"ok": True, "sent": 40}
+
+    monkeypatch.setattr(nr, "stream_motion", fake_stream)
+
+    result = _NODE_REGISTRY["ROS2NativeSetJoint"]({
+        "joint": "gripper",
+        "position": 60.0,
+        "units": "degrees",
+        "armed": True,
+    })
+
+    assert result["moved"] is True
+    assert captured["command_topic"] == "/joint_commands"
+    assert captured["names"] == ["shoulder_pan", "gripper"]
+    assert math.isclose(captured["target"]["gripper"], math.radians(60.0), abs_tol=1e-6)
+    assert "native set gripper" in result["report"]
+
+
+def test_native_follow_detection_joint_blocked_when_disarmed(monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("native ROS 2 must not be touched while disarmed")
+
+    monkeypatch.setattr(nr, "read_pose", fail_if_called)
+    monkeypatch.setattr(nr, "stream_motion", fail_if_called)
+
+    result = _NODE_REGISTRY["ROS2NativeFollowDetectionJoint"]({
+        "joint": "shoulder_pan",
+        "detection": {"found": True, "center": {"x": 160}},
+        "frame_width": 640,
+        "armed": False,
+    })
+
+    assert result["report"].startswith("BLOCKED:")
+    assert result["moved"] is False
+    assert result["command"] > 0
+
+
+def test_native_follow_detection_joint_streams_toward_center(monkeypatch):
+    start = {"shoulder_pan": math.radians(10.0), "elbow": 0.0}
+    after = {"shoulder_pan": math.radians(20.0), "elbow": 0.0}
+    poses = iter([start, after])
+    captured = {}
+
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: next(poses))
+
+    def fake_stream(command_topic, names, s, t, **kwargs):
+        captured["command_topic"] = command_topic
+        captured["names"] = names
+        captured["target"] = t
+        return {"ok": True, "sent": 12}
+
+    monkeypatch.setattr(nr, "stream_motion", fake_stream)
+
+    result = _NODE_REGISTRY["ROS2NativeFollowDetectionJoint"]({
+        "joint": "shoulder_pan",
+        "detection": {"found": True, "center": {"x": 160}},
+        "frame_width": 640,
+        "robot": {"state_topic": "/state", "command_topic": "/cmd"},
+        "target_x": 0.5,
+        "gain": 40.0,
+        "max_step": 15.0,
+        "units": "degrees",
+        "armed": True,
+    })
+
+    assert result["moved"] is True
+    assert math.isclose(result["command"], 10.0, abs_tol=1e-6)
+    assert captured["command_topic"] == "/cmd"
+    assert captured["names"] == ["shoulder_pan", "elbow"]
+    assert math.isclose(captured["target"]["shoulder_pan"], math.radians(20.0), abs_tol=1e-6)
+    assert "native follow shoulder_pan" in result["report"]
+
+
+def test_native_nodes_structured_error_without_rclpy(monkeypatch):
+    monkeypatch.setattr(nr, "available", lambda: (False, "rclpy is not importable"))
+
+    status = _NODE_REGISTRY["ROS2NativeStatus"]({})
+    assert status["ready"] is False
+    assert "MISSING" in status["report"]
+
+    state = _NODE_REGISTRY["ROS2NativeJointState"]({})
+    assert state["pose"] == {}
+    assert "rclpy is not importable" in state["report"]
+
+    robot = _NODE_REGISTRY["ROS2NativeRobotDiscovery"]({})
+    assert robot["ready"] is False
+    assert "rclpy is not importable" in robot["robot"]["error"]
+
+    set_joint = _NODE_REGISTRY["ROS2NativeSetJoint"]({"joint": "gripper", "armed": True})
+    assert set_joint["moved"] is False
+    assert "rclpy is not importable" in set_joint["report"]
+
+    follow = _NODE_REGISTRY["ROS2NativeFollowDetectionJoint"]({
+        "joint": "shoulder_pan",
+        "detection": {"found": True, "center": {"x": 160}},
+        "armed": True,
+    })
+    assert follow["moved"] is False
+    assert "rclpy is not importable" in follow["report"]
+
+
 # --- universal live robot control over rosbridge ----------------------------------
 
 def test_rotate_joint_needs_a_joint_name():
@@ -466,6 +665,148 @@ def test_rotate_joint_clamps_to_config_limits(monkeypatch):
     assert "clamped from 125.0" in result["report"]
 
 
+def test_robot_discovery_reports_generic_profile(monkeypatch):
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+    monkeypatch.setattr(rb, "get_connection", lambda *a, **k: object())
+    monkeypatch.setattr(rb, "read_config", lambda *a, **k: {
+        "commands_allowed": True,
+        "joints": {"shoulder_pan": {"lower": math.radians(-90.0), "upper": math.radians(90.0)}},
+    })
+    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: {
+        "shoulder_pan": math.radians(10.0),
+        "elbow": math.radians(25.0),
+    })
+
+    result = _NODE_REGISTRY["ROS2RobotDiscovery"]({
+        "host": "robot.local",
+        "port": 9090,
+        "units": "degrees",
+    })
+
+    assert result["connected"] is True
+    assert result["ready"] is True
+    assert result["joints"] == ["shoulder_pan", "elbow"]
+    assert result["pose"]["shoulder_pan"] == 10.0
+    assert result["robot"]["command_topic"] == "/joint_commands"
+    assert result["robot"]["commands_allowed"] is True
+    assert result["robot"]["limits"]["shoulder_pan"]["lower"] == -90.0
+    assert "=> READY" in result["report"]
+
+
+def test_robot_discovery_connection_failure_reports_diagnostics(monkeypatch):
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+
+    def fail_connect(*args, **kwargs):
+        raise RuntimeError("Failed to connect to ROS")
+
+    monkeypatch.setattr(rb, "get_connection", fail_connect)
+    monkeypatch.setattr(live, "_rosbridge_connection_diagnostics", lambda host, port: [
+        f"tcp port: closed at {host}:{port}",
+        "local rosbridge_server: not found",
+        "FIX: sudo apt install ros-jazzy-rosbridge-server",
+    ])
+
+    result = _NODE_REGISTRY["ROS2RobotDiscovery"]({})
+
+    assert result["connected"] is False
+    assert result["robot"]["diagnostics"][0] == "tcp port: closed at 127.0.0.1:9090"
+    assert "local rosbridge_server: not found" in result["report"]
+    assert "sudo apt install ros-jazzy-rosbridge-server" in result["report"]
+
+
+def test_rosbridge_status_reports_connection_diagnostics(monkeypatch):
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+
+    def fail_connect(*args, **kwargs):
+        raise RuntimeError("Failed to connect to ROS")
+
+    monkeypatch.setattr(rb, "get_connection", fail_connect)
+    monkeypatch.setattr(live, "_rosbridge_connection_diagnostics", lambda host, port: [
+        f"tcp port: closed at {host}:{port}",
+        "FIX: start it with: ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090",
+    ])
+
+    result = _NODE_REGISTRY["ROS2RosbridgeStatus"]({})
+
+    assert result["ready"] is False
+    assert "UNREACHABLE" in result["report"]
+    assert "tcp port: closed at 127.0.0.1:9090" in result["report"]
+    assert "ros2 launch rosbridge_server" in result["report"]
+
+
+def test_follow_detection_joint_blocked_when_disarmed(monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("rosbridge must not be touched while disarmed")
+
+    monkeypatch.setattr(rb, "get_connection", fail_if_called)
+    monkeypatch.setattr(rb, "read_pose", fail_if_called)
+    monkeypatch.setattr(rb, "stream_motion", fail_if_called)
+    result = _NODE_REGISTRY["ROS2FollowDetectionJoint"]({
+        "joint": "shoulder_pan",
+        "detection": {"found": True, "center": {"x": 160}},
+        "frame_width": 640,
+        "armed": False,
+    })
+    assert result["report"].startswith("BLOCKED:")
+    assert result["moved"] is False
+    assert result["command"] > 0
+
+
+def test_follow_detection_joint_streams_toward_center(monkeypatch):
+    start = {"shoulder_pan": math.radians(10.0), "elbow": 0.0}
+    after = {"shoulder_pan": math.radians(20.0), "elbow": 0.0}
+    poses = iter([start, after])
+    captured = {}
+
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: next(poses))
+
+    def fake_stream(host, port, command_topic, names, s, t, **kwargs):
+        captured["host"] = host
+        captured["command_topic"] = command_topic
+        captured["names"] = names
+        captured["target"] = t
+        return {"ok": True, "sent": 12}
+
+    monkeypatch.setattr(rb, "stream_motion", fake_stream)
+    result = _NODE_REGISTRY["ROS2FollowDetectionJoint"]({
+        "joint": "shoulder_pan",
+        "detection": {"found": True, "center": {"x": 160}},
+        "frame_width": 640,
+        "robot": {"host": "robot.local", "port": 9090, "state_topic": "/state", "command_topic": "/cmd"},
+        "target_x": 0.5,
+        "gain": 40.0,
+        "max_step": 15.0,
+        "units": "degrees",
+        "armed": True,
+    })
+    assert result["moved"] is True
+    assert math.isclose(result["command"], 10.0, abs_tol=1e-6)
+    assert captured["host"] == "robot.local"
+    assert captured["command_topic"] == "/cmd"
+    assert math.isclose(captured["target"]["shoulder_pan"], math.radians(20.0), abs_tol=1e-6)
+    assert captured["names"] == ["shoulder_pan", "elbow"]
+    assert "cube x=160.0/640" in result["report"]
+
+
+def test_follow_detection_joint_noops_inside_deadband(monkeypatch):
+    def fail_if_streamed(*args, **kwargs):
+        raise AssertionError("must not stream commands inside deadband")
+
+    monkeypatch.setattr(rb, "stream_motion", fail_if_streamed)
+    result = _NODE_REGISTRY["ROS2FollowDetectionJoint"]({
+        "joint": "shoulder_pan",
+        "detection": {"found": True, "center": {"x": 322}},
+        "frame_width": 640,
+        "target_x": 0.5,
+        "deadband": 0.02,
+        "armed": True,
+    })
+    assert result["moved"] is False
+    assert result["command"] == 0.0
+    assert "centered enough" in result["report"]
+
+
 def test_live_nodes_structured_error_without_roslibpy(monkeypatch):
     monkeypatch.setattr(rb, "available", lambda: (False, "roslibpy is not installed"))
     status = _NODE_REGISTRY["ROS2RosbridgeStatus"]({})
@@ -475,6 +816,10 @@ def test_live_nodes_structured_error_without_roslibpy(monkeypatch):
     live = _NODE_REGISTRY["ROS2JointState"]({})
     assert live["pose"] == {}
     assert "FAILED" in live["report"]
+
+    robot = _NODE_REGISTRY["ROS2RobotDiscovery"]({})
+    assert robot["ready"] is False
+    assert "roslibpy is not installed" in robot["robot"]["error"]
 
 
 def test_motion_dashboard_renders_before_after():
