@@ -637,6 +637,12 @@ def ros2_native_follow_detection_joint(ctx: dict) -> dict:
 
     deadband_value = _finite_float(ctx.get("deadband"))
     deadband = max(0.0, min(0.5, 0.08 if deadband_value is None else deadband_value))
+    if normalized_x < target_x - deadband:
+        zone = "LEFT"
+    elif normalized_x > target_x + deadband:
+        zone = "RIGHT"
+    else:
+        zone = "CENTER"
     gain_value = _finite_float(ctx.get("gain"))
     gain = 35.0 if gain_value is None else gain_value
     command = error * gain
@@ -652,7 +658,8 @@ def ros2_native_follow_detection_joint(ctx: dict) -> dict:
             "command": 0.0,
             "report": (
                 f"native follow {joint}: target centered enough "
-                f"(x={center_x:.1f}/{width:.0f}, error={error:+.3f}, deadband={deadband:g}); no command streamed."
+                f"(zone={zone}, x={center_x:.1f}/{width:.0f}, error={error:+.3f}, deadband={deadband:g}); "
+                "no command streamed."
             ),
         }
 
@@ -663,7 +670,8 @@ def ros2_native_follow_detection_joint(ctx: dict) -> dict:
             "command": command,
             "report": (
                 f"BLOCKED: native ROS 2 visual follow preview only. Set armed=true to move {joint}. "
-                f"Cube x={center_x:.1f}/{width:.0f}, error={error:+.3f}, command={command:+.2f} {units}."
+                f"Cube zone={zone}, x={center_x:.1f}/{width:.0f}, error={error:+.3f}, "
+                f"command={command:+.2f} {units}."
             ),
         }
 
@@ -1122,6 +1130,12 @@ def ros2_follow_detection_joint(ctx: dict) -> dict:
 
     deadband_value = _finite_float(ctx.get("deadband"))
     deadband = max(0.0, min(0.5, 0.08 if deadband_value is None else deadband_value))
+    if normalized_x < target_x - deadband:
+        zone = "LEFT"
+    elif normalized_x > target_x + deadband:
+        zone = "RIGHT"
+    else:
+        zone = "CENTER"
     gain_value = _finite_float(ctx.get("gain"))
     gain = 35.0 if gain_value is None else gain_value
     command = error * gain
@@ -1137,7 +1151,8 @@ def ros2_follow_detection_joint(ctx: dict) -> dict:
             "command": 0.0,
             "report": (
                 f"follow {joint}: target centered enough "
-                f"(x={center_x:.1f}/{width:.0f}, error={error:+.3f}, deadband={deadband:g}); no command streamed."
+                f"(zone={zone}, x={center_x:.1f}/{width:.0f}, error={error:+.3f}, deadband={deadband:g}); "
+                "no command streamed."
             ),
         }
 
@@ -1148,7 +1163,8 @@ def ros2_follow_detection_joint(ctx: dict) -> dict:
             "command": command,
             "report": (
                 f"BLOCKED: visual follow preview only. Set armed=true to move {joint}. "
-                f"Cube x={center_x:.1f}/{width:.0f}, error={error:+.3f}, command={command:+.2f} {units}."
+                f"Cube zone={zone}, x={center_x:.1f}/{width:.0f}, error={error:+.3f}, "
+                f"command={command:+.2f} {units}."
             ),
         }
 
@@ -1236,7 +1252,7 @@ def ros2_follow_detection_joint(ctx: dict) -> dict:
     moved = abs(after_rad.get(joint, start_rad[joint]) - start_rad[joint]) >= math.radians(0.5)
     clamp_note = "" if abs(raw_target_rad - target_rad_value) < 1e-9 else f" (clamped to {target[joint]:.2f})"
     report = (
-        f"follow {joint}: cube x={center_x:.1f}/{width:.0f}, error={error:+.3f}, "
+        f"follow {joint}: cube zone={zone}, x={center_x:.1f}/{width:.0f}, error={error:+.3f}, "
         f"command={command:+.2f} {units}, target={target[joint]:.2f}{clamp_note}; "
         f"streamed {result.get('sent', 0)} commands at {rate_hz:g} Hz"
     )

@@ -822,7 +822,25 @@ def test_follow_detection_joint_streams_toward_center(monkeypatch):
     assert captured["command_topic"] == "/cmd"
     assert math.isclose(captured["target"]["shoulder_pan"], math.radians(20.0), abs_tol=1e-6)
     assert captured["names"] == ["shoulder_pan", "elbow"]
-    assert "cube x=160.0/640" in result["report"]
+    assert "cube zone=LEFT, x=160.0/640" in result["report"]
+
+
+def test_follow_detection_uses_payload_frame_width_and_reports_zone(monkeypatch):
+    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: pytest.fail("disarmed preview must not read ROS"))
+    result = _NODE_REGISTRY["ROS2FollowDetectionJoint"]({
+        "joint": "shoulder_pan",
+        "detection": {"found": True, "center": {"x": 455}, "frame_width": 640},
+        "frame_width": 960,
+        "target_x": 0.5,
+        "deadband": 0.16,
+        "gain": 10.0,
+        "max_step": 2.0,
+        "invert": True,
+        "armed": False,
+    })
+
+    assert result["command"] == 2.0
+    assert "zone=RIGHT, x=455.0/640" in result["report"]
 
 
 def test_follow_detection_joint_noops_inside_deadband(monkeypatch):
