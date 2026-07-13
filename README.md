@@ -127,10 +127,11 @@ docker exec blacknode-ros2 pkill -f "ros2 topic pub"
 | Docker only | A persistent helper container `blacknode-ros2` (image `ros:jazzy`) starts on first use; commands run via `docker exec` |
 | Neither | Structured error with setup instructions |
 
-Environment overrides: `BLACKNODE_ROS2_IMAGE` (default `ros:jazzy`) and
-`BLACKNODE_ROS2_CONTAINER` (default `blacknode-ros2`). For native workspaces,
-`./start.sh` auto-sources `/opt/ros/jazzy/setup.bash` when present and
-auto-sources a workspace only when it finds exactly one
+Environment overrides: `BLACKNODE_ROS2_IMAGE` (default `ros:jazzy`),
+`BLACKNODE_ROS2_CONTAINER` (default `blacknode-ros2`), and
+`BLACKNODE_ROS2_STREAM_PORT_RANGE` (default `39000-39049`). For native
+workspaces, `./start.sh` auto-sources `/opt/ros/jazzy/setup.bash` when present
+and auto-sources a workspace only when it finds exactly one
 `ros2_ws/install/setup.bash`. If you have multiple ROS workspaces, source the
 one you want before starting Blacknode so the overlay order is explicit:
 
@@ -143,18 +144,18 @@ source /path/to/ros2_ws/install/setup.bash
 Remove the helper container any time with `docker rm -f blacknode-ros2` — it is
 recreated on demand.
 
-Note: the Docker backend is a self-contained ROS graph inside the container —
-great for demos, learning, and agent development. To talk to robots on your
-LAN, use a native/WSL ROS 2 install (DDS discovery does not cross the
-Docker Desktop NAT on Windows/macOS).
+Note: the Docker backend is a self-contained ROS graph inside the container.
+It is useful for demos, learning, and agent development. `ROS2ImageSnapshot`
+and `ROS2ImageStream` also work in this mode for image topics that exist inside
+the helper container; Blacknode exposes the MJPEG bridge on localhost using the
+configured stream port range. To talk to host USB cameras, native robot
+drivers, or robots on your LAN, use a native/WSL ROS 2 install or a rosbridge
+server (DDS discovery does not cross the Docker Desktop NAT on Windows/macOS).
 
-`ROS2ImageSnapshot` and `ROS2ImageStream` require the native backend because
-they subscribe with `rclpy` and read real image bytes directly. Start Blacknode
-from a shell where ROS 2 is sourced. For livestream, cook `ROS2ImageStream`
-with `action=start`, then switch `action=stop` and cook it again when done. The
-preview shows a `LIVE` placeholder immediately, then live frames once the topic
-publishes; each frame is stamped with a small `LIVE` badge and the node also
-emits `streaming=true`.
+For livestream, cook `ROS2ImageStream` with `action=start`, then switch
+`action=stop` and cook it again when done. The preview shows a `LIVE`
+placeholder immediately, then live frames once the topic publishes; each frame
+is stamped with a small `LIVE` badge and the node also emits `streaming=true`.
 
 `ROS2Run` uses the same environment as the Blacknode server process. If your
 camera driver lives in a workspace overlay, make sure that overlay is sourced

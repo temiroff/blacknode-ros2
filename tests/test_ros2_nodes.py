@@ -367,6 +367,20 @@ def test_image_stream_stop_calls_runtime(monkeypatch):
     assert "stopped 1" in result["report"]
 
 
+def test_docker_stream_port_allocator_uses_runtime_state(monkeypatch):
+    class FakeProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(rt, "STREAM_PORT_RANGE", "39000-39002")
+    rt._streams.clear()
+    rt._streams["a"] = {"backend": "docker", "port": 39000, "proc": FakeProc()}
+
+    assert rt._free_docker_stream_port() == (39001, "")
+    assert rt._free_docker_stream_port(39002) == (39002, "")
+    assert rt._free_docker_stream_port(38999)[1].startswith("Docker ROS2ImageStream port must be within")
+
+
 def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):
     class FakeProc:
         pid = 12345

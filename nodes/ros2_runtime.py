@@ -28,6 +28,9 @@ from typing import Any
 
 IMAGE = os.environ.get("BLACKNODE_ROS2_IMAGE", "ros:jazzy")
 CONTAINER = os.environ.get("BLACKNODE_ROS2_CONTAINER", "blacknode-ros2")
+STREAM_PORT_RANGE = os.environ.get("BLACKNODE_ROS2_STREAM_PORT_RANGE", "39000-39049")
+_CONTAINER_STREAM_SCRIPT = "/tmp/blacknode_ros2_image_stream_server.py"
+_CONTAINER_SNAPSHOT_SCRIPT = "/tmp/blacknode_ros2_image_snapshot.py"
 
 _NO_BACKEND_HELP = (
     "ROS 2 is not available: no `ros2` on PATH and no running Docker daemon. "
@@ -155,10 +158,20 @@ def ensure_container() -> str | None:
         return "docker ps timed out"
     if check.returncode != 0:
         return check.stderr.strip() or "docker ps failed"
-    if check.stdout.strip():
+    if check.stdout.strip() and _container_has_stream_ports():
         return None
     _run(["docker", "rm", "-f", CONTAINER], 30)  # clear a stopped leftover
-    start = _run(["docker", "run", "-d", "--name", CONTAINER, IMAGE, "sleep", "infinity"], 180)
+    start = _run([
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        CONTAINER,
+        *_docker_stream_port_args(),
+        IMAGE,
+        "sleep",
+        "infinity",
+    ], 180)
     if start.returncode != 0:
         return start.stderr.strip() or f"could not start {IMAGE} (docker pull {IMAGE} first?)"
     return None
@@ -176,6 +189,67 @@ def _container_shell(args: list[str], timeout: float) -> str:
         "source /opt/ros/$ROS_DISTRO/setup.bash && "
         f"timeout {max(1, int(timeout))}s ros2 {shlex.join(args)}"
     )
+
+
+def _stream_port_bounds() -> tuple[int, int]:
+    text = str(STREAM_PORT_RANGE or "").strip()
+    if "-" in text:
+        start_s, end_s = text.split("-", 1)
+    else:
+        start_s = end_s = text
+    try:
+        start = int(start_s)
+        end = int(end_s)
+    except ValueError:
+        start, end = 39000, 39049
+    start = max(1024, min(65535, start))
+    end = max(start, min(65535, end))
+    return start, end
+
+
+def _docker_stream_port_args() -> list[str]:
+    start, end = _stream_port_bounds()
+    return ["-p", f"127.0.0.1:{start}-{end}:{start}-{end}/tcp"]
+
+
+def _container_has_stream_ports() -> bool:
+    start, _end = _stream_port_bounds()
+    inspect = _run(["docker", "inspect", "-f", "{{json .NetworkSettings.Ports}}", CONTAINER], 15)
+    return inspect.returncode == 0 and f'"{start}/tcp"' in (inspect.stdout or "")
+
+
+def _copy_to_container(host_path: Path, container_path: str) -> str | None:
+    if not host_path.exists():
+        return f"helper not found: {host_path}"
+    copied = _run(["docker", "cp", str(host_path), f"{CONTAINER}:{container_path}"], 30)
+    if copied.returncode != 0:
+        return copied.stderr.strip() or f"could not copy {host_path.name} into {CONTAINER}"
+    return None
+
+
+def _ensure_container_stream_deps() -> str | None:
+    check = _run([
+        "docker",
+        "exec",
+        CONTAINER,
+        "bash",
+        "-lc",
+        "python3 - <<'PY'\nimport rclpy, sensor_msgs, numpy, PIL\nPY",
+    ], 30)
+    if check.returncode == 0:
+        return None
+
+    install = _run([
+        "docker",
+        "exec",
+        CONTAINER,
+        "bash",
+        "-lc",
+        "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-numpy python3-pil",
+    ], 240)
+    if install.returncode != 0:
+        return install.stderr.strip() or install.stdout.strip() or "could not install python3-pil in ROS 2 helper container"
+    return None
 
 
 def run_ros2(args: list[str], timeout: float = 15.0) -> dict[str, Any]:
@@ -245,13 +319,7 @@ def stop_detached(pattern: str = "ros2 topic pub") -> dict[str, Any]:
     stopped = 0
     if backend == "native":
         for proc in _detached:
-            if proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                except Exception:
-                    proc.terminate()
+            if _terminate_process(proc):
                 stopped += 1
         _detached.clear()
         return {"ok": True, "backend": backend, "stopped": stopped}
@@ -315,6 +383,23 @@ def _free_port(host: str) -> int:
         return int(sock.getsockname()[1])
 
 
+def _free_docker_stream_port(preferred: int = 0) -> tuple[int, str]:
+    start, end = _stream_port_bounds()
+    used = {
+        int(item.get("port") or 0)
+        for item in _streams.values()
+        if item.get("backend") == "docker" and item.get("proc") is not None and item["proc"].poll() is None
+    }
+    if preferred > 0:
+        if preferred < start or preferred > end:
+            return 0, f"Docker ROS2ImageStream port must be within published range {start}-{end}; set port=0 to auto-pick"
+        return preferred, "" if preferred not in used else f"port {preferred} is already in use by another ROS2ImageStream"
+    for port in range(start, end + 1):
+        if port not in used:
+            return port, ""
+    return 0, f"no free Docker ROS2ImageStream port in range {start}-{end}"
+
+
 def _port_open(host: str, port: int, timeout: float = 0.15) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -358,20 +443,15 @@ def capture_image_snapshot(
     output_format: str,
     jpeg_quality: int,
 ) -> dict[str, Any]:
-    """Capture one image message through native rclpy and return a data URL."""
+    """Capture one image message through rclpy and return a data URL."""
     backend = detect_backend()["backend"]
-    if backend != "native":
-        return {
-            "ok": False,
-            "backend": backend,
-            "error": "image snapshots require native ROS 2 with rclpy; start Blacknode from a sourced ROS shell.",
-        }
     script = _snapshot_script()
     if not script.exists():
         return {"ok": False, "backend": backend, "error": f"snapshot helper not found: {script}"}
-    args = [
-        sys.executable,
-        str(script),
+    if backend == "none":
+        return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
+
+    helper_args = [
         "--topic",
         topic,
         "--message-type",
@@ -383,8 +463,23 @@ def capture_image_snapshot(
         "--jpeg-quality",
         str(jpeg_quality),
     ]
+    if backend == "docker":
+        err = ensure_container() or _ensure_container_stream_deps() or _copy_to_container(script, _CONTAINER_SNAPSHOT_SCRIPT)
+        if err:
+            return {"ok": False, "backend": backend, "error": err}
+        shell = (
+            "source /opt/ros/$ROS_DISTRO/setup.bash && "
+            f"timeout {max(1, int(timeout) + 5)}s python3 {_CONTAINER_SNAPSHOT_SCRIPT} {shlex.join(helper_args)}"
+        )
+        run_args = ["docker", "exec", CONTAINER, "bash", "-lc", shell]
+    else:
+        run_args = [
+            sys.executable,
+            str(script),
+            *helper_args,
+        ]
     try:
-        proc = _run(args, max(1.0, float(timeout)) + 5.0)
+        proc = _run(run_args, max(1.0, float(timeout)) + 15.0)
     except subprocess.TimeoutExpired:
         return {"ok": False, "backend": backend, "error": f"snapshot helper timed out after {timeout:g}s"}
     try:
@@ -408,14 +503,21 @@ def start_image_stream(
     max_width: int,
     jpeg_quality: int,
 ) -> dict[str, Any]:
-    """Start a native ROS image-topic MJPEG bridge. Returns URL/report data."""
+    """Start a ROS image-topic MJPEG bridge. Returns URL/report data."""
     backend = detect_backend()["backend"]
-    if backend != "native":
-        return {
-            "ok": False,
-            "backend": backend,
-            "error": "ROS2ImageStream requires native ROS 2 with rclpy; start Blacknode from a sourced ROS shell.",
-        }
+    if backend == "docker":
+        return _start_docker_image_stream(
+            stream_id=stream_id,
+            topic=topic,
+            message_type=message_type,
+            host=host,
+            port=port,
+            max_fps=max_fps,
+            max_width=max_width,
+            jpeg_quality=jpeg_quality,
+        )
+    if backend == "none":
+        return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
     script = _stream_script()
     if not script.exists():
         return {"ok": False, "backend": backend, "error": f"stream helper not found: {script}"}
@@ -496,6 +598,111 @@ def start_image_stream(
     }
 
 
+def _start_docker_image_stream(
+    *,
+    stream_id: str,
+    topic: str,
+    message_type: str,
+    host: str,
+    port: int,
+    max_fps: float,
+    max_width: int,
+    jpeg_quality: int,
+) -> dict[str, Any]:
+    err = ensure_container() or _ensure_container_stream_deps() or _copy_to_container(_stream_script(), _CONTAINER_STREAM_SCRIPT)
+    if err:
+        return {"ok": False, "backend": "docker", "error": err}
+
+    existing = _streams.get(stream_id)
+    if (
+        existing
+        and existing.get("backend") == "docker"
+        and existing.get("proc") is not None
+        and existing["proc"].poll() is None
+        and existing.get("topic") == topic
+        and existing.get("message_type") == message_type
+    ):
+        return {
+            "ok": True,
+            "backend": "docker",
+            "stream_id": stream_id,
+            "stream_url": existing.get("url", ""),
+            "snapshot_url": existing.get("snapshot_url", ""),
+            "health_url": existing.get("health_url", ""),
+        }
+
+    stop_image_stream(stream_id)
+    selected_port, port_error = _free_docker_stream_port(int(port) if int(port) > 0 else 0)
+    if port_error:
+        return {"ok": False, "backend": "docker", "error": port_error}
+
+    helper_args = [
+        "--topic",
+        topic,
+        "--message-type",
+        message_type,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(selected_port),
+        "--max-fps",
+        str(max_fps),
+        "--max-width",
+        str(max_width),
+        "--jpeg-quality",
+        str(jpeg_quality),
+    ]
+    marker = f"{_CONTAINER_STREAM_SCRIPT} --topic {topic}"
+    shell = (
+        "source /opt/ros/$ROS_DISTRO/setup.bash && "
+        f"exec python3 {_CONTAINER_STREAM_SCRIPT} {shlex.join(helper_args)}"
+    )
+    try:
+        proc = subprocess.Popen(
+            ["docker", "exec", CONTAINER, "bash", "-lc", shell],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        return {"ok": False, "backend": "docker", "error": f"{type(exc).__name__}: {exc}"}
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return {"ok": False, "backend": "docker", "error": "stream helper exited before opening its HTTP port"}
+        if _port_open("127.0.0.1", selected_port):
+            break
+        time.sleep(0.05)
+    else:
+        _terminate_process(proc)
+        _run(["docker", "exec", CONTAINER, "pkill", "-f", marker], 15)
+        return {"ok": False, "backend": "docker", "error": f"stream helper did not open http://127.0.0.1:{selected_port}"}
+
+    public_host = "127.0.0.1" if host in {"", "0.0.0.0"} else host
+    url = f"http://{public_host}:{selected_port}/stream.mjpg"
+    _streams[stream_id] = {
+        "backend": "docker",
+        "proc": proc,
+        "url": url,
+        "snapshot_url": f"http://{public_host}:{selected_port}/snapshot.jpg",
+        "health_url": f"http://{public_host}:{selected_port}/health.json",
+        "topic": topic,
+        "message_type": message_type,
+        "marker": marker,
+        "port": selected_port,
+    }
+    return {
+        "ok": True,
+        "backend": "docker",
+        "stream_id": stream_id,
+        "stream_url": url,
+        "snapshot_url": _streams[stream_id]["snapshot_url"],
+        "health_url": _streams[stream_id]["health_url"],
+        "port": selected_port,
+    }
+
+
 def stop_image_stream(stream_id: str = "") -> dict[str, Any]:
     """Stop one image stream by id, or all streams when stream_id is empty."""
     ids = [stream_id] if stream_id else list(_streams)
@@ -504,6 +711,10 @@ def stop_image_stream(stream_id: str = "") -> dict[str, Any]:
         item = _streams.pop(sid, None)
         if not item:
             continue
-        if _terminate_process(item["proc"]):
+        killed = False
+        if item.get("backend") == "docker" and item.get("marker"):
+            result = _run(["docker", "exec", CONTAINER, "pkill", "-f", str(item["marker"])], 15)
+            killed = result.returncode in (0, 1)
+        if _terminate_process(item["proc"]) or killed:
             stopped += 1
     return {"ok": True, "backend": detect_backend()["backend"], "stopped": stopped}
