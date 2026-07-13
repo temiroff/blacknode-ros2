@@ -66,6 +66,7 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2NativeJointState` | Read a `JointState` topic through native `rclpy` |
 | `ROS2NativeSetJoint` | Set one joint to an absolute position through native `rclpy`; previews the live pose and target when disarmed, writes only when `armed=true` |
 | `ROS2NativeFollowDetectionJoint` | Visual-servo one joint toward a CV2 detection center through native `rclpy` |
+| `ROS2RosbridgeServer` | Ensure the local rosbridge Docker container is ready; on Windows it also starts Docker Desktop when installed |
 | `ROS2RosbridgeStatus` | Preflight a rosbridge robot connection (roslibpy, WebSocket, optional config) with exact fixes |
 | `ROS2RobotDiscovery` | Detect a connected rosbridge robot and output a generic robot profile with topics, joints, pose, limits, and command permission |
 | `ROS2JointState` | Read any robot's current pose from a `JointState` topic (radians or degrees) |
@@ -202,6 +203,12 @@ the write (`stream_motion`) is what's actually gated.
 
 ### Rosbridge transport
 
+`ROS2RosbridgeServer` removes the separate startup command for local Windows
+workflows. With `action=ensure`, it starts Docker Desktop when necessary,
+builds a small ROS Jazzy rosbridge image on first use, and reuses the
+`blacknode-rosbridge` container afterward. Docker Desktop must be installed,
+but the user does not need to start Docker or rosbridge manually.
+
 The `ROS2RosbridgeStatus`, `ROS2RobotDiscovery`, `ROS2JointState`,
 `ROS2RotateJoint`, `ROS2FollowDetectionJoint`, and `ROS2MotionDashboard` nodes
 drive **any** robot that exposes its joints as `sensor_msgs/msg/JointState` over
@@ -234,8 +241,8 @@ Both pre-fill the common topics (`/joint_states`, `/joint_commands`,
    `/joint_commands`.
    - Native path: start Blacknode from the sourced ROS 2 environment and use
      `ROS2NativeStatus`.
-   - Rosbridge path: start `rosbridge_server` at `ws://127.0.0.1:9090` and use
-     `ROS2RosbridgeStatus`.
+   - Rosbridge path: run `ROS2RosbridgeServer` to ensure
+     `ws://127.0.0.1:9090` is ready, then use `ROS2RosbridgeStatus`.
 3. In Blacknode, load **ROS 2 Live Motion Test** and press **Run** — the
    dashboard shows the live pose with `armed=false` (no motion).
 4. Set the `ROS2RotateJoint` node's `armed=true` and recook. It syncs to the

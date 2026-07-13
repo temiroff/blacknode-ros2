@@ -16,6 +16,7 @@ from blacknode.pkg.blacknode_ros2 import ros2_runtime as rt
 from blacknode.pkg.blacknode_ros2 import ros2_live as live
 from blacknode.pkg.blacknode_ros2 import ros2_native_runtime as nr
 from blacknode.pkg.blacknode_ros2 import rosbridge_runtime as rb
+from blacknode.pkg.blacknode_ros2 import rosbridge_service as service
 from blacknode.workflow import validate_workflow
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
@@ -38,6 +39,7 @@ EXPECTED_NODES = [
     "ROS2PackageExecutables",
     "ROS2Command",
     "ROS2RosbridgeStatus",
+    "ROS2RosbridgeServer",
     "ROS2RobotDiscovery",
     "ROS2JointState",
     "ROS2RotateJoint",
@@ -61,6 +63,26 @@ def test_all_nodes_registered_with_category():
         assert name in _NODE_REGISTRY, name
         assert _NODE_REGISTRY[name]._bn_category == "ROS 2"
         assert _NODE_REGISTRY[name]._bn_package == "blacknode-ros2"
+
+
+def test_rosbridge_server_reuses_open_local_port(monkeypatch):
+    monkeypatch.setattr(service, "_port_open", lambda host, port: True)
+    monkeypatch.setattr(service, "_start_docker_desktop", lambda timeout: pytest.fail("Docker must not be touched"))
+
+    result = _NODE_REGISTRY["ROS2RosbridgeServer"]({"action": "ensure"})
+
+    assert result["ready"] is True
+    assert "already running" in result["report"]
+
+
+def test_rosbridge_server_reports_missing_docker(monkeypatch):
+    monkeypatch.setattr(service, "_port_open", lambda host, port: False)
+    monkeypatch.setattr(service, "_start_docker_desktop", lambda timeout: (_ for _ in ()).throw(RuntimeError("install Docker Desktop")))
+
+    result = _NODE_REGISTRY["ROS2RosbridgeServer"]({"action": "ensure"})
+
+    assert result["ready"] is False
+    assert "install Docker Desktop" in result["report"]
 
 
 def test_templates_validate():
