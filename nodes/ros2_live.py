@@ -21,6 +21,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import urllib.request
 from typing import Any
 
@@ -31,6 +32,8 @@ from . import ros2_native_runtime as nr
 from . import rosbridge_runtime as rb
 
 _CATEGORY = "ROS 2"
+_continuous_follow_lock = threading.Lock()
+_continuous_follow_runs: dict[str, dict[str, Any]] = {}
 
 
 def _svg_text(value: Any, limit: int = 90) -> str:
@@ -1266,6 +1269,198 @@ def ros2_follow_detection_joint(ctx: dict) -> dict:
         "command": command,
         "report": report,
     }
+
+
+def _continuous_follow_result(
+    *, joint: str = "", report: str = "", running: bool = False,
+) -> dict[str, Any]:
+    return {
+        "running": running,
+        "moved": False,
+        "joint": joint,
+        "before": {},
+        "after": {},
+        "target": {},
+        "error": 0.0,
+        "command": 0.0,
+        "report": report,
+    }
+
+
+def _stop_continuous_follow(run_id: str) -> bool:
+    with _continuous_follow_lock:
+        item = _continuous_follow_runs.pop(run_id, None)
+    if item is None:
+        return False
+    item["stop"].set()
+    thread = item.get("thread")
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    return True
+
+
+def stop_continuous_follow_services() -> dict[str, Any]:
+    """Stop every background visual-follow loop owned by this process."""
+    with _continuous_follow_lock:
+        run_ids = list(_continuous_follow_runs)
+    stopped = sum(1 for run_id in run_ids if _stop_continuous_follow(run_id))
+    return {
+        "ok": True,
+        "stopped": stopped,
+        "report": f"stopped {stopped} continuous visual-follow loop(s)",
+    }
+
+
+def continuous_follow_runtime_status() -> list[dict[str, Any]]:
+    with _continuous_follow_lock:
+        return [
+            {
+                "run_id": run_id,
+                "joint": str(item.get("ctx", {}).get("joint") or ""),
+                "loop_hz": float(item.get("ctx", {}).get("loop_hz") or 2.0),
+            }
+            for run_id, item in _continuous_follow_runs.items()
+            if item.get("thread") is not None and item["thread"].is_alive()
+        ]
+
+
+def _continuous_follow_worker(run_id: str, item: dict[str, Any]) -> None:
+    stop_event = item["stop"]
+    while not stop_event.is_set():
+        with _continuous_follow_lock:
+            current = _continuous_follow_runs.get(run_id)
+            if current is not item:
+                return
+            step_ctx = dict(item["ctx"])
+        step_ctx["armed"] = True
+        try:
+            result = ros2_follow_detection_joint(step_ctx)
+        except Exception as exc:
+            result = _continuous_follow_result(
+                joint=str(step_ctx.get("joint") or ""),
+                report=f"continuous follow FAILED: {exc}",
+            )
+        with _continuous_follow_lock:
+            if _continuous_follow_runs.get(run_id) is item:
+                item["last"] = result
+        loop_hz_value = _finite_float(step_ctx.get("loop_hz"))
+        loop_hz = max(0.2, min(20.0, 2.0 if loop_hz_value is None else loop_hz_value))
+        stop_event.wait(1.0 / loop_hz)
+
+
+@node(
+    name="ROS2ContinuousFollowDetectionJoint",
+    category=_CATEGORY,
+    description="Continuously visual-servo one joint from a live CV2 detection URL until stopped or disarmed.",
+    inputs={
+        "trigger": AnyPort,
+        "action": Enum(["start", "stop", "check"], default="start"),
+        "run_id": Text(default="vision_follow"),
+        "loop_hz": Float(default=2.0),
+        "detection": Dict,
+        "detection_url": Text(default=""),
+        "robot": Dict,
+        "host": Text(default="127.0.0.1"),
+        "port": Int(default=9090),
+        "state_topic": Text(default="/joint_states"),
+        "command_topic": Text(default="/joint_commands"),
+        "config_topic": Text(default=""),
+        "joint": Text(default=""),
+        "units": Enum(["radians", "degrees"], default="degrees"),
+        "frame_width": Int(default=640),
+        "target_x": Float(default=0.5),
+        "deadband": Float(default=0.08),
+        "gain": Float(default=35.0),
+        "max_step": Float(default=8.0),
+        "invert": Bool(default=False),
+        "ramp_seconds": Float(default=0.35),
+        "hold_seconds": Float(default=0.2),
+        "rate_hz": Float(default=30.0),
+        "armed": Bool(default=False),
+        "timeout": Float(default=10.0),
+    },
+    outputs={
+        "running": Bool,
+        "moved": Bool,
+        "joint": Text,
+        "before": Dict,
+        "after": Dict,
+        "target": Dict,
+        "error": Float,
+        "command": Float,
+        "report": Text,
+    },
+)
+def ros2_continuous_follow_detection_joint(ctx: dict) -> dict:
+    action = str(ctx.get("action") or "start").strip().lower()
+    run_id = str(ctx.get("run_id") or "vision_follow").strip() or "vision_follow"
+    joint = str(ctx.get("joint") or "").strip()
+
+    if action == "stop":
+        stopped = _stop_continuous_follow(run_id)
+        return _continuous_follow_result(
+            joint=joint,
+            report=f"continuous follow '{run_id}' {'stopped' if stopped else 'was not running'}.",
+        )
+
+    with _continuous_follow_lock:
+        existing = _continuous_follow_runs.get(run_id)
+        if existing is not None and not existing["thread"].is_alive():
+            _continuous_follow_runs.pop(run_id, None)
+            existing = None
+
+    if action == "check":
+        if existing is None:
+            return _continuous_follow_result(joint=joint, report=f"continuous follow '{run_id}' is not running.")
+        with _continuous_follow_lock:
+            latest = dict(existing.get("last") or _continuous_follow_result(joint=joint))
+        latest["running"] = True
+        latest["report"] = f"continuous follow '{run_id}' is running; {latest.get('report') or 'waiting for first update'}"
+        return latest
+
+    if not bool(ctx.get("armed", False)):
+        _stop_continuous_follow(run_id)
+        return _continuous_follow_result(
+            joint=joint,
+            report="BLOCKED: set armed=true, then cook once to start continuous movement.",
+        )
+    if not str(ctx.get("detection_url") or "").strip():
+        _stop_continuous_follow(run_id)
+        return _continuous_follow_result(
+            joint=joint,
+            report="BLOCKED: continuous follow requires the CV2 detection_url input.",
+        )
+
+    if existing is not None:
+        with _continuous_follow_lock:
+            existing["ctx"] = dict(ctx)
+            latest = dict(existing.get("last") or _continuous_follow_result(joint=joint))
+        latest["running"] = True
+        latest["report"] = f"continuous follow '{run_id}' updated and remains running; {latest.get('report') or 'waiting for first update'}"
+        return latest
+
+    item: dict[str, Any] = {
+        "ctx": dict(ctx),
+        "stop": threading.Event(),
+        "last": _continuous_follow_result(joint=joint, report="waiting for first update"),
+    }
+    thread = threading.Thread(
+        target=_continuous_follow_worker,
+        args=(run_id, item),
+        name=f"blacknode-follow-{run_id}",
+        daemon=True,
+    )
+    item["thread"] = thread
+    with _continuous_follow_lock:
+        _continuous_follow_runs[run_id] = item
+    thread.start()
+    loop_hz_value = _finite_float(ctx.get("loop_hz"))
+    loop_hz = 2.0 if loop_hz_value is None else loop_hz_value
+    return _continuous_follow_result(
+        joint=joint,
+        running=True,
+        report=f"continuous follow '{run_id}' started at {loop_hz:g} Hz; use action=stop or Stop All to stop.",
+    )
 
 
 @node(

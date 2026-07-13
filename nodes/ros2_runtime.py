@@ -70,13 +70,19 @@ def runtime_status() -> dict[str, Any]:
 
     live_detached = [proc for proc in _detached if proc.poll() is None]
     _detached[:] = live_detached
+    try:
+        from .ros2_live import continuous_follow_runtime_status
+        continuous_follows = continuous_follow_runtime_status()
+    except Exception:
+        continuous_follows = []
     return {
         "ok": True,
         "backend": detect_backend()["backend"],
         "streams": live_streams,
         "managed_runs": live_runs,
         "detached_count": len(live_detached),
-        "active": bool(live_streams or live_runs or live_detached),
+        "continuous_follows": continuous_follows,
+        "active": bool(live_streams or live_runs or live_detached or continuous_follows),
     }
 
 
@@ -84,6 +90,11 @@ def stop_runtime_services() -> dict[str, Any]:
     """Stop all ROS helpers this Blacknode process started for live workflows."""
     status_before = runtime_status()
     stream_result = stop_image_stream("")
+    try:
+        from .ros2_live import stop_continuous_follow_services
+        follow_result = stop_continuous_follow_services()
+    except Exception as exc:
+        follow_result = {"ok": False, "stopped": 0, "error": str(exc)}
 
     managed_stopped = 0
     managed_errors: list[str] = []
@@ -104,10 +115,13 @@ def stop_runtime_services() -> dict[str, Any]:
             detached_errors.append(str(result.get("error") or "could not stop detached ROS 2 process"))
 
     errors = managed_errors + detached_errors
+    if not follow_result.get("ok"):
+        errors.append(str(follow_result.get("error") or "could not stop continuous visual follow"))
     stopped = {
         "streams": int(stream_result.get("stopped") or 0),
         "managed_runs": managed_stopped,
         "detached": detached_stopped,
+        "continuous_follows": int(follow_result.get("stopped") or 0),
     }
     return {
         "ok": not errors,
@@ -118,7 +132,8 @@ def stop_runtime_services() -> dict[str, Any]:
         "report": (
             f"stopped {stopped['streams']} stream(s), "
             f"{stopped['managed_runs']} ROS 2 run process(es), "
-            f"{stopped['detached']} detached ROS 2 process(es)"
+            f"{stopped['detached']} detached ROS 2 process(es), "
+            f"{stopped['continuous_follows']} continuous visual-follow loop(s)"
         ),
     }
 

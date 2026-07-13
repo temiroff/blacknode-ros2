@@ -6,6 +6,7 @@ available, and skip cleanly otherwise.
 """
 import json
 import math
+import threading
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,7 @@ EXPECTED_NODES = [
     "ROS2JointState",
     "ROS2RotateJoint",
     "ROS2FollowDetectionJoint",
+    "ROS2ContinuousFollowDetectionJoint",
     "ROS2NativeStatus",
     "ROS2NativeRobotDiscovery",
     "ROS2NativeJointState",
@@ -428,7 +430,12 @@ def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):
     result = rt.stop_runtime_services()
 
     assert result["ok"] is True
-    assert result["stopped"] == {"streams": 1, "managed_runs": 1, "detached": 1}
+    assert result["stopped"] == {
+        "streams": 1,
+        "managed_runs": 1,
+        "detached": 1,
+        "continuous_follows": 0,
+    }
     assert rt._streams == {}
     assert rt._managed_detached == {}
     assert rt._detached == []
@@ -859,6 +866,70 @@ def test_follow_detection_joint_noops_inside_deadband(monkeypatch):
     assert result["moved"] is False
     assert result["command"] == 0.0
     assert "centered enough" in result["report"]
+
+
+def test_continuous_follow_runs_until_stopped(monkeypatch):
+    called = threading.Event()
+
+    def fake_follow(ctx):
+        called.set()
+        return {
+            "moved": True,
+            "joint": ctx["joint"],
+            "before": {ctx["joint"]: 0.0},
+            "after": {ctx["joint"]: 2.0},
+            "target": {ctx["joint"]: 2.0},
+            "error": 0.25,
+            "command": 2.0,
+            "report": "MOVE LEFT",
+        }
+
+    monkeypatch.setattr(live, "ros2_follow_detection_joint", fake_follow)
+    live.stop_continuous_follow_services()
+    try:
+        started = _NODE_REGISTRY["ROS2ContinuousFollowDetectionJoint"]({
+            "action": "start",
+            "run_id": "test_follow",
+            "loop_hz": 20.0,
+            "detection_url": "http://127.0.0.1:9999/detection.json",
+            "joint": "shoulder_pan",
+            "armed": True,
+        })
+        assert started["running"] is True
+        assert called.wait(1.0)
+
+        checked = _NODE_REGISTRY["ROS2ContinuousFollowDetectionJoint"]({
+            "action": "check",
+            "run_id": "test_follow",
+            "joint": "shoulder_pan",
+        })
+        assert checked["running"] is True
+        assert checked["command"] == 2.0
+
+        stopped = _NODE_REGISTRY["ROS2ContinuousFollowDetectionJoint"]({
+            "action": "stop",
+            "run_id": "test_follow",
+            "joint": "shoulder_pan",
+        })
+        assert stopped["running"] is False
+        assert "stopped" in stopped["report"]
+        assert live.continuous_follow_runtime_status() == []
+    finally:
+        live.stop_continuous_follow_services()
+
+
+def test_continuous_follow_disarmed_does_not_start():
+    live.stop_continuous_follow_services()
+    result = _NODE_REGISTRY["ROS2ContinuousFollowDetectionJoint"]({
+        "action": "start",
+        "run_id": "test_disarmed",
+        "detection_url": "http://127.0.0.1:9999/detection.json",
+        "joint": "shoulder_pan",
+        "armed": False,
+    })
+    assert result["running"] is False
+    assert result["report"].startswith("BLOCKED:")
+    assert live.continuous_follow_runtime_status() == []
 
 
 def test_live_nodes_structured_error_without_roslibpy(monkeypatch):
