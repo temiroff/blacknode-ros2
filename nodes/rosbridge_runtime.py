@@ -40,6 +40,143 @@ _NO_ROSLIBPY = (
 
 _lock = threading.Lock()
 _connections: dict[tuple[str, int], Any] = {}
+_joint_stream_lock = threading.Lock()
+_joint_streams: dict[tuple[str, int, str, str, str], "JointStreamSession"] = {}
+
+
+class JointStreamSession:
+    """Persistent JointState subscription and command publisher.
+
+    Continuous controllers use one of these sessions instead of subscribing,
+    advertising, and tearing both entities down on every control tick.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        state_topic: str,
+        command_topic: str,
+        config_topic: str,
+        timeout: float,
+    ) -> None:
+        self.key = (host, int(port), state_topic, command_topic, config_topic)
+        self.ros = get_connection(host, port, timeout)
+        self._data_lock = threading.Lock()
+        self._pose_event = threading.Event()
+        self._config_event = threading.Event()
+        self._pose: dict[str, float] = {}
+        self._config: dict[str, Any] = {}
+        self._pose_updated_at = 0.0
+        self._closed = False
+        self._users = 0
+        self._state_sub = roslibpy.Topic(self.ros, state_topic, JOINT_STATE_TYPE)
+        self._command_pub = roslibpy.Topic(self.ros, command_topic, JOINT_STATE_TYPE)
+        self._config_sub = roslibpy.Topic(self.ros, config_topic, STRING_TYPE) if config_topic else None
+        self._state_sub.subscribe(self._on_state)
+        if self._config_sub is not None:
+            self._config_sub.subscribe(self._on_config)
+        self._command_pub.advertise()
+
+    def _on_state(self, message: dict) -> None:
+        names = message.get("name") or []
+        positions = message.get("position") or []
+        pose = {
+            str(name): float(value)
+            for name, value in zip(names, positions)
+            if isinstance(value, (int, float)) and math.isfinite(value)
+        }
+        if not pose:
+            return
+        with self._data_lock:
+            self._pose = pose
+            self._pose_updated_at = time.monotonic()
+        self._pose_event.set()
+
+    def _on_config(self, message: dict) -> None:
+        try:
+            config = json.loads(message.get("data") or "")
+        except (TypeError, ValueError):
+            return
+        if isinstance(config, dict):
+            with self._data_lock:
+                self._config = config
+            self._config_event.set()
+
+    def wait_for_pose(self, timeout: float) -> dict[str, float]:
+        self._pose_event.wait(max(0.0, timeout))
+        with self._data_lock:
+            return dict(self._pose)
+
+    def snapshot(self) -> tuple[dict[str, float], dict[str, Any], float]:
+        with self._data_lock:
+            age = time.monotonic() - self._pose_updated_at if self._pose_updated_at else float("inf")
+            return dict(self._pose), dict(self._config), age
+
+    def wait_for_config(self, timeout: float) -> dict[str, Any]:
+        self._config_event.wait(max(0.0, timeout))
+        with self._data_lock:
+            return dict(self._config)
+
+    def publish(self, positions_radians: dict[str, float]) -> None:
+        if self._closed or not self.ros.is_connected:
+            raise RuntimeError("rosbridge joint stream is disconnected")
+        self._command_pub.publish(_joint_command_message(list(positions_radians), positions_radians))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for topic, operation in (
+            (self._state_sub, "unsubscribe"),
+            (self._config_sub, "unsubscribe"),
+            (self._command_pub, "unadvertise"),
+        ):
+            if topic is None:
+                continue
+            try:
+                getattr(topic, operation)()
+            except Exception:
+                pass
+
+
+def acquire_joint_stream(
+    host: str,
+    port: int,
+    state_topic: str,
+    command_topic: str,
+    config_topic: str = "",
+    timeout: float = 10.0,
+) -> JointStreamSession:
+    key = (host, int(port), state_topic, command_topic, config_topic)
+    with _joint_stream_lock:
+        session = _joint_streams.get(key)
+        if session is None or session._closed or not session.ros.is_connected:
+            if session is not None:
+                session.close()
+            session = JointStreamSession(*key, timeout)
+            _joint_streams[key] = session
+        session._users += 1
+        return session
+
+
+def release_joint_stream(session: JointStreamSession | None) -> None:
+    if session is None:
+        return
+    with _joint_stream_lock:
+        session._users = max(0, session._users - 1)
+        if session._users == 0:
+            _joint_streams.pop(session.key, None)
+            session.close()
+
+
+def close_joint_streams() -> int:
+    with _joint_stream_lock:
+        sessions = list(_joint_streams.values())
+        _joint_streams.clear()
+    for session in sessions:
+        session.close()
+    return len(sessions)
 
 
 def available() -> tuple[bool, str]:
