@@ -27,7 +27,7 @@ import urllib.request
 from typing import Any
 
 from blacknode.node import Any as AnyPort
-from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text, node
+from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text, _NODE_REGISTRY, node
 
 from . import ros2_native_runtime as nr
 from . import rosbridge_runtime as rb
@@ -1222,7 +1222,7 @@ def ros2_joint_state(ctx: dict) -> dict:
 def _live_motion_dashboard_outputs(
     ctx: dict[str, Any], pose: dict[str, float], units: str, torque_enabled: bool, item: dict[str, Any]
 ) -> dict[str, dict[str, Any]]:
-    """Render MotionDashboard nodes directly connected to this live pose."""
+    """Push a live pose into supported directly connected pass-through nodes."""
     graph = ctx.get("__graph__")
     source_id = str(ctx.get("__node_id__") or "")
     if graph is None or not source_id or not pose:
@@ -1233,23 +1233,48 @@ def _live_motion_dashboard_outputs(
             continue
         target_id = str(edge.get("to") or "")
         target = getattr(graph, "_nodes", {}).get(target_id) or {}
-        if target.get("type") != "ROS2MotionDashboard":
-            continue
-        baselines = item.setdefault("dashboard_baselines", {})
-        baseline = baselines.setdefault(target_id, dict(pose))
-        dashboard_ctx = dict(target.get("params") or {})
-        dashboard_ctx.update({
-            "pose": dict(pose),
-            "before": dict(baseline),
-            "units": units,
-            "__live_pose__": True,
-            "__torque_enabled__": torque_enabled,
-            "__manual_mode__": "holding" if torque_enabled else "released",
-        })
-        try:
-            outputs[target_id] = dict(ros2_motion_dashboard(dashboard_ctx))
-        except Exception:
-            continue
+        target_type = str(target.get("type") or "")
+        if target_type == "ROS2MotionDashboard":
+            baselines = item.setdefault("dashboard_baselines", {})
+            baseline = baselines.setdefault(target_id, dict(pose))
+            dashboard_ctx = dict(target.get("params") or {})
+            dashboard_ctx.update({
+                "pose": dict(pose),
+                "before": dict(baseline),
+                "units": units,
+                "__live_pose__": True,
+                "__torque_enabled__": torque_enabled,
+                "__manual_mode__": "holding" if torque_enabled else "released",
+            })
+            try:
+                outputs[target_id] = dict(ros2_motion_dashboard(dashboard_ctx))
+            except Exception:
+                continue
+        elif target_type == "RobotCalibrationRecorder":
+            calibration_fn = _NODE_REGISTRY.get(target_type)
+            if calibration_fn is None:
+                continue
+            calibration_ctx = dict(target.get("params") or {})
+            # Reuse values resolved during the original graph cook (profile,
+            # hardware serial, and safety options) while replacing only the
+            # live pose and torque state.
+            cache = getattr(graph, "_cache", {}) or {}
+            for incoming in list(getattr(graph, "_edges", []) or []):
+                if incoming.get("to") != target_id or incoming.get("to_port") == "pose":
+                    continue
+                cache_key = (incoming.get("from"), incoming.get("from_port"))
+                if cache_key in cache:
+                    calibration_ctx[str(incoming.get("to_port") or "")] = cache[cache_key]
+            calibration_ctx.update({
+                "action": "_sample",
+                "pose": dict(pose),
+                "torque_enabled": torque_enabled,
+                "__live_pose__": True,
+            })
+            try:
+                outputs[target_id] = dict(calibration_fn(calibration_ctx))
+            except Exception:
+                continue
     return outputs
 
 
