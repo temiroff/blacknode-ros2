@@ -2467,7 +2467,7 @@ def leader_follower_runtime_status() -> list[dict[str, Any]]:
             {
                 "run_id": run_id,
                 "armed": bool(item.get("ctx", {}).get("armed", False)),
-                "loop_hz": float(item.get("ctx", {}).get("loop_hz") or 10.0),
+                "loop_hz": float(item.get("ctx", {}).get("loop_hz") or 60.0),
                 "report": str(item.get("last", {}).get("report") or ""),
             }
             for run_id, item in _leader_follower_runs.items()
@@ -2536,15 +2536,23 @@ def _leader_follower_step(item: dict[str, Any], ctx: dict[str, Any]) -> dict[str
     leader_display: dict[str, float] = {}
     follower_display: dict[str, float] = {}
     clamped: list[str] = []
-    max_step = math.radians(max(0.05, float(ctx.get("max_step_deg") or 2.0)))
-    deadband = math.radians(max(0.0, float(ctx.get("deadband_deg") or 0.15)))
+    tracking_mode = str(ctx.get("tracking_mode") or "direct").strip().lower()
+    if tracking_mode not in {"bounded", "direct"}:
+        tracking_mode = "bounded"
+    max_step_value = _finite_float(ctx.get("max_step_deg"))
+    deadband_value = _finite_float(ctx.get("deadband_deg"))
+    max_step = math.radians(max(0.05, 2.0 if max_step_value is None else max_step_value))
+    deadband = math.radians(max(0.0, 0.0 if deadband_value is None else deadband_value))
     for source, destination in mapping.items():
         if source not in leader_pose_rad or destination not in follower_pose_rad:
             continue
         scale = _finite_float(scales.get(source))
         offset = _finite_float(offsets.get(source))
         desired = leader_pose_rad[source] * (1.0 if scale is None else scale) + math.radians(0.0 if offset is None else offset)
-        bounded = min(follower_pose_rad[destination] + max_step, max(follower_pose_rad[destination] - max_step, desired))
+        bounded = desired if tracking_mode == "direct" else min(
+            follower_pose_rad[destination] + max_step,
+            max(follower_pose_rad[destination] - max_step, desired),
+        )
         if destination in limits:
             lower, upper = limits[destination]
             limited = min(upper, max(lower, bounded))
@@ -2565,7 +2573,8 @@ def _leader_follower_step(item: dict[str, Any], ctx: dict[str, Any]) -> dict[str
     if commanded:
         follower_session.publish(target_rad)
     report = (
-        f"Following {len(target)} joint(s) at bounded targets." if commanded
+        f"Direct-following {len(target)} joint(s) from the live leader pose." if commanded and tracking_mode == "direct"
+        else f"Following {len(target)} joint(s) at bounded targets." if commanded
         else f"Previewing {len(target)} mapped joint(s); set armed=true to move follower." if not armed
         else "Leader and follower are within the deadband."
     )
@@ -2591,7 +2600,7 @@ def _leader_follower_worker(run_id: str, item: dict[str, Any]) -> None:
                 if _leader_follower_runs.get(run_id) is item:
                     item["last"] = result
                     item["updated_at"] = time.time()
-            hz = max(1.0, min(30.0, float(ctx.get("loop_hz") or 10.0)))
+            hz = max(1.0, min(60.0, float(ctx.get("loop_hz") or 60.0)))
             item["stop"].wait(1.0 / hz)
     finally:
         rb.release_joint_stream(item.get("leader_session"))
@@ -2602,7 +2611,7 @@ def _leader_follower_worker(run_id: str, item: dict[str, Any]) -> None:
     name="ROS2LeaderFollower",
     live=True,
     category=_CATEGORY,
-    description="Stream a released leader robot pose into a separately calibrated follower with mapping, limits, deadband, and bounded steps.",
+    description="Stream a released leader robot pose into a separately calibrated follower. Defaults match LeRobot: direct targets at 60 Hz without a deadband; calibrated limits and stale-data suppression remain enforced.",
     inputs={
         "trigger": AnyPort,
         "action": Enum(["start", "stop", "check"], default="start"),
@@ -2615,9 +2624,10 @@ def _leader_follower_worker(run_id: str, item: dict[str, Any]) -> None:
         "joint_map": Dict,
         "scale": Dict,
         "offset_deg": Dict,
-        "loop_hz": Float(default=10.0),
-        "max_step_deg": Float(default=2.0),
-        "deadband_deg": Float(default=0.15),
+        "tracking_mode": Enum(["bounded", "direct"], default="direct"),
+        "loop_hz": Float(default=60.0),
+        "max_step_deg": Float(default=0.0),
+        "deadband_deg": Float(default=0.0),
         "stale_after": Float(default=0.75),
         "require_calibration": Bool(default=True),
         "require_leader_released": Bool(default=True),
