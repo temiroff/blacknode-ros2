@@ -1389,6 +1389,40 @@ def test_live_motion_dashboard_keeps_first_pose_as_baseline():
     assert "TARGET" not in svg
 
 
+def test_live_pose_pushes_into_robot_connection_dashboard(monkeypatch):
+    received = []
+    monkeypatch.setitem(
+        live._NODE_REGISTRY,
+        "RobotConnectionDashboard",
+        lambda ctx: received.append(dict(ctx)) or {
+            "dashboard": "data:image/svg+xml;base64,dGVzdA==",
+            "summary": {"profile_id": "my_so_arm101", "pose": dict(ctx["pose"])},
+        },
+    )
+    graph = type("GraphStub", (), {})()
+    graph._edges = [
+        {"from": "manual", "from_port": "pose", "to": "connection", "to_port": "pose"},
+        {"from": "discovery", "from_port": "robot", "to": "connection", "to_port": "robot"},
+        {"from": "status", "from_port": "ready", "to": "connection", "to_port": "interface_ready"},
+    ]
+    graph._nodes = {
+        "connection": {"type": "RobotConnectionDashboard", "params": {"connected": True}},
+    }
+    graph._cache = {
+        ("discovery", "robot"): {"driver": {"profile_id": "my_so_arm101"}},
+        ("status", "ready"): True,
+    }
+    ctx = {"__graph__": graph, "__node_id__": "manual"}
+
+    outputs = live._live_motion_dashboard_outputs(
+        ctx, {"shoulder_pan": 21.5}, "degrees", False, {}
+    )
+
+    assert outputs["connection"]["summary"]["pose"] == {"shoulder_pan": 21.5}
+    assert received[0]["robot"]["driver"]["profile_id"] == "my_so_arm101"
+    assert received[0]["interface_ready"] is True
+
+
 def test_live_pose_pushes_into_connected_robot_calibration_recorder(monkeypatch):
     received = []
     monkeypatch.setitem(
