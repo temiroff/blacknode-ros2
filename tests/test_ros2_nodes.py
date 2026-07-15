@@ -53,6 +53,7 @@ EXPECTED_NODES = [
     "ROS2SetJoint",
     "ROS2FollowDetectionJoint",
     "ROS2ContinuousFollowDetectionJoint",
+    "ROS2LeaderFollower",
     "ROS2NativeStatus",
     "ROS2NativeRobotDiscovery",
     "ROS2NativeJointState",
@@ -508,6 +509,7 @@ def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):
         "managed_runs": 1,
         "detached": 1,
         "continuous_follows": 0,
+        "leader_followers": 0,
     }
     assert rt._streams == {}
     assert rt._managed_detached == {}
@@ -1298,6 +1300,131 @@ def test_continuous_follow_disarmed_does_not_start():
     assert result["running"] is False
     assert result["report"].startswith("BLOCKED:")
     assert live.continuous_follow_runtime_status() == []
+
+
+def test_leader_follower_previews_disarmed_and_commands_bounded_targets(monkeypatch):
+    class FakeSession:
+        def __init__(self, pose, config):
+            self.pose = pose
+            self.config = config
+            self.published = []
+
+        def snapshot(self):
+            return self.pose, self.config, 0.01
+
+        def wait_for_pose(self, timeout):
+            return self.pose
+
+        def wait_for_config(self, timeout):
+            return self.config
+
+        def publish(self, pose):
+            self.published.append(dict(pose))
+
+    leader_session = FakeSession(
+        {"shoulder_pan": math.radians(30.0), "elbow_flex": math.radians(-20.0)},
+        {"torque_enabled": False},
+    )
+    follower_session = FakeSession(
+        {"shoulder_pan": 0.0, "elbow_flex": 0.0},
+        {
+            "commands_allowed": True,
+            "joints": {
+                "shoulder_pan": {"lower": math.radians(-90), "upper": math.radians(90)},
+                "elbow_flex": {"lower": math.radians(-90), "upper": math.radians(90)},
+            },
+        },
+    )
+    acquired = []
+
+    def acquire(*signature, **kwargs):
+        acquired.append(signature)
+        return leader_session if signature[2].startswith("/leader/") else follower_session
+
+    monkeypatch.setattr(live, "_resolve_transport", lambda ctx: "rosbridge")
+    monkeypatch.setattr(rb, "acquire_joint_stream", acquire)
+    monkeypatch.setattr(rb, "release_joint_stream", lambda *args, **kwargs: None)
+    item = {
+        "leader_session": None, "follower_session": None,
+        "leader_signature": None, "follower_signature": None,
+    }
+    base_ctx = {
+        "leader_robot": {
+            "state_topic": "/leader/joint_states", "command_topic": "/leader/joint_commands",
+            "config_topic": "/leader/joint_config",
+            "driver": {"hardware_id": "LEADER-1", "calibration_path": "leader.json"},
+        },
+        "follower_robot": {
+            "state_topic": "/follower/joint_states", "command_topic": "/follower/joint_commands",
+            "config_topic": "/follower/joint_config",
+            "driver": {"hardware_id": "FOLLOWER-1", "calibration_path": "follower.json"},
+        },
+        "max_step_deg": 2.0,
+        "deadband_deg": 0.1,
+        "require_calibration": True,
+        "require_leader_released": True,
+    }
+
+    preview = live._leader_follower_step(item, {**base_ctx, "armed": False})
+    commanded = live._leader_follower_step(item, {**base_ctx, "armed": True})
+
+    assert preview["running"] is True
+    assert preview["live"] is True
+    assert preview["armed"] is False
+    assert follower_session.published and commanded["commanded"] is True
+    assert commanded["target"]["shoulder_pan"] == pytest.approx(2.0)
+    assert commanded["target"]["elbow_flex"] == pytest.approx(-2.0)
+    assert len(acquired) == 2
+
+
+def test_leader_follower_blocks_same_usb_device(monkeypatch):
+    result = live._leader_follower_step({}, {
+        "armed": True,
+        "leader_robot": {"driver": {"hardware_id": "SAME", "calibration_path": "a.json"}},
+        "follower_robot": {"driver": {"hardware_id": "SAME", "calibration_path": "b.json"}},
+    })
+
+    assert result["commanded"] is False
+    assert "same USB device" in result["report"]
+
+
+def test_leader_follower_live_service_updates_and_stops(monkeypatch):
+    called = threading.Event()
+
+    def fake_step(item, ctx):
+        called.set()
+        return live._leader_follower_result(
+            running=True,
+            live=True,
+            armed=bool(ctx.get("armed")),
+            report="test leader-follower tick",
+        )
+
+    monkeypatch.setattr(live, "_leader_follower_step", fake_step)
+    live.stop_leader_follower_services()
+    try:
+        started = _NODE_REGISTRY["ROS2LeaderFollower"]({
+            "action": "start",
+            "run_id": "test_leader_follower",
+            "loop_hz": 20.0,
+            "armed": False,
+        })
+        assert started["running"] is True
+        assert called.wait(1.0)
+
+        updated = live.update_leader_follower_config("test_leader_follower", {"armed": True})
+        assert updated["ok"] is True
+        assert live.leader_follower_runtime_status()[0]["armed"] is True
+
+        stopped = _NODE_REGISTRY["ROS2LeaderFollower"]({
+            "action": "stop",
+            "run_id": "test_leader_follower",
+        })
+        assert stopped["running"] is False
+        assert "stopped" in stopped["report"]
+        assert live.leader_follower_runtime_status() == []
+    finally:
+        live.stop_leader_follower_services()
 
 
 def test_live_nodes_structured_error_without_roslibpy(monkeypatch):

@@ -71,10 +71,12 @@ def runtime_status() -> dict[str, Any]:
     live_detached = [proc for proc in _detached if proc.poll() is None]
     _detached[:] = live_detached
     try:
-        from .ros2_live import continuous_follow_runtime_status
+        from .ros2_live import continuous_follow_runtime_status, leader_follower_runtime_status
         continuous_follows = continuous_follow_runtime_status()
+        leader_followers = leader_follower_runtime_status()
     except Exception:
         continuous_follows = []
+        leader_followers = []
     return {
         "ok": True,
         "backend": detect_backend()["backend"],
@@ -82,7 +84,8 @@ def runtime_status() -> dict[str, Any]:
         "managed_runs": live_runs,
         "detached_count": len(live_detached),
         "continuous_follows": continuous_follows,
-        "active": bool(live_streams or live_runs or live_detached or continuous_follows),
+        "leader_followers": leader_followers,
+        "active": bool(live_streams or live_runs or live_detached or continuous_follows or leader_followers),
     }
 
 
@@ -91,10 +94,12 @@ def stop_runtime_services() -> dict[str, Any]:
     status_before = runtime_status()
     stream_result = stop_image_stream("")
     try:
-        from .ros2_live import stop_continuous_follow_services
+        from .ros2_live import stop_continuous_follow_services, stop_leader_follower_services
         follow_result = stop_continuous_follow_services()
+        leader_follower_result = stop_leader_follower_services()
     except Exception as exc:
         follow_result = {"ok": False, "stopped": 0, "error": str(exc)}
+        leader_follower_result = {"ok": False, "stopped": 0, "error": str(exc)}
 
     managed_stopped = 0
     managed_errors: list[str] = []
@@ -117,11 +122,14 @@ def stop_runtime_services() -> dict[str, Any]:
     errors = managed_errors + detached_errors
     if not follow_result.get("ok"):
         errors.append(str(follow_result.get("error") or "could not stop continuous visual follow"))
+    if not leader_follower_result.get("ok"):
+        errors.append(str(leader_follower_result.get("error") or "could not stop leader-follower control"))
     stopped = {
         "streams": int(stream_result.get("stopped") or 0),
         "managed_runs": managed_stopped,
         "detached": detached_stopped,
         "continuous_follows": int(follow_result.get("stopped") or 0),
+        "leader_followers": int(leader_follower_result.get("stopped") or 0),
     }
     return {
         "ok": not errors,
@@ -133,7 +141,8 @@ def stop_runtime_services() -> dict[str, Any]:
             f"stopped {stopped['streams']} stream(s), "
             f"{stopped['managed_runs']} ROS 2 run process(es), "
             f"{stopped['detached']} detached ROS 2 process(es), "
-            f"{stopped['continuous_follows']} continuous visual-follow loop(s)"
+            f"{stopped['continuous_follows']} continuous visual-follow loop(s), "
+            f"{stopped['leader_followers']} leader-follower controller(s)"
         ),
     }
 
