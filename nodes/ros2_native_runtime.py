@@ -148,6 +148,26 @@ def read_config(topic: str, timeout: float = 10.0) -> dict[str, Any] | None:
         return None
 
 
+def publish_string(topic: str, value: str, timeout: float = 2.0) -> dict[str, Any]:
+    imports, node = _create_node("blacknode_native_string_command")
+    rclpy = imports["rclpy"]
+    publisher = node.create_publisher(imports["String"], topic, 10)
+    try:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while publisher.get_subscription_count() == 0 and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        if publisher.get_subscription_count() == 0:
+            return {"ok": False, "error": f"no subscribers on {topic}"}
+        message = imports["String"]()
+        message.data = str(value)
+        publisher.publish(message)
+        rclpy.spin_once(node, timeout_sec=0.05)
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        node.destroy_publisher(publisher)
+        node.destroy_node()
 def limits_radians(config: dict[str, Any] | None) -> dict[str, tuple[float, float]]:
     limits: dict[str, tuple[float, float]] = {}
     joints = (config or {}).get("joints") or {}

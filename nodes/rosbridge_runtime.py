@@ -118,6 +118,14 @@ class JointStreamSession:
         with self._data_lock:
             return dict(self._config)
 
+    def seed_config(self, config: dict[str, Any]) -> None:
+        """Synchronize cached config after a separately acknowledged control action."""
+        if not isinstance(config, dict) or not config:
+            return
+        with self._data_lock:
+            self._config = dict(config)
+        self._config_event.set()
+
     def publish(self, positions_radians: dict[str, float]) -> None:
         if self._closed or not self.ros.is_connected:
             raise RuntimeError("rosbridge joint stream is disconnected")
@@ -160,12 +168,20 @@ def acquire_joint_stream(
         return session
 
 
-def release_joint_stream(session: JointStreamSession | None) -> None:
+def release_joint_stream(session: JointStreamSession | None, *, discard: bool = False) -> None:
+    """Release one user while retaining an idle subscription for fast restart.
+
+    Rosbridge unsubscribe/subscribe operations are asynchronous. Closing the
+    final subscriber and immediately recreating it during a UI mode transition
+    can leave the replacement registered without callbacks. Idle sessions stay
+    cached until an explicit runtime stop; genuinely stale sessions can request
+    ``discard=True`` to force replacement.
+    """
     if session is None:
         return
     with _joint_stream_lock:
         session._users = max(0, session._users - 1)
-        if session._users == 0:
+        if session._users == 0 and discard:
             _joint_streams.pop(session.key, None)
             session.close()
 
@@ -272,6 +288,31 @@ def read_config(host: str, port: int, topic: str, timeout: float = 10.0) -> dict
         return None
 
 
+def publish_string(host: str, port: int, topic: str, value: str, timeout: float = 2.0) -> dict[str, Any]:
+    """Reliably publish a short control message through rosbridge.
+
+    A newly advertised rosbridge topic is asynchronous. Publishing once and
+    immediately unadvertising can lose the message before remote subscribers
+    learn about the publisher. Control messages are idempotent, so keep the
+    advertisement alive briefly and repeat the same payload.
+    """
+    try:
+        ros = get_connection(host, port, timeout)
+        publisher = roslibpy.Topic(ros, topic, STRING_TYPE)
+        publisher.advertise()
+        try:
+            message = roslibpy.Message({"data": str(value)})
+            time.sleep(0.15)
+            for attempt in range(3):
+                publisher.publish(message)
+                if attempt < 2:
+                    time.sleep(0.08)
+            time.sleep(0.1)
+            return {"ok": True, "sent": 3}
+        finally:
+            publisher.unadvertise()
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 def limits_radians(config: dict[str, Any] | None) -> dict[str, tuple[float, float]]:
     """Per-joint (lower, upper) bounds in radians from a config dict, if present.
 

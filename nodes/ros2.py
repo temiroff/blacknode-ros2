@@ -193,6 +193,7 @@ def _resolve_image_message_type(topic: str, requested: str) -> tuple[str, str]:
 
 @node(
     name="ROS2ImageStream",
+    live=True,
     category=_CATEGORY,
     description="Start or stop a live MJPEG preview for a raw or compressed ROS 2 image topic.",
     inputs={
