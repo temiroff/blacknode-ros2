@@ -1361,6 +1361,7 @@ def test_leader_follower_previews_disarmed_and_commands_bounded_targets(monkeypa
         },
         "max_step_deg": 2.0,
         "deadband_deg": 0.1,
+        "tracking_mode": "bounded",
         "require_calibration": True,
         "require_leader_released": True,
     }
@@ -1375,6 +1376,15 @@ def test_leader_follower_previews_disarmed_and_commands_bounded_targets(monkeypa
     assert commanded["target"]["shoulder_pan"] == pytest.approx(2.0)
     assert commanded["target"]["elbow_flex"] == pytest.approx(-2.0)
     assert len(acquired) == 2
+
+    direct = live._leader_follower_step(item, {
+        **base_ctx,
+        "armed": True,
+        "tracking_mode": "direct",
+    })
+    assert direct["target"]["shoulder_pan"] == pytest.approx(30.0)
+    assert direct["target"]["elbow_flex"] == pytest.approx(-20.0)
+    assert "Direct-following" in direct["report"]
 
 
 def test_leader_follower_blocks_same_usb_device(monkeypatch):

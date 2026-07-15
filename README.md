@@ -68,7 +68,7 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2RotateJoint` | Move one joint by a relative delta over the selected transport |
 | `ROS2FollowDetectionJoint` | Visual-servo one joint toward a CV2 detection center over the selected transport |
 | `ROS2ContinuousFollowDetectionJoint` | Cook once to start a persistent visual-servo service with one long-lived joint-state subscription and command publisher |
-| `ROS2LeaderFollower` | Stream a released leader pose into a separately calibrated follower with mapping, limits, stale-data suppression, and bounded commands |
+| `ROS2LeaderFollower` | Stream a released leader pose into a separately calibrated follower with direct or bounded tracking, mapping, limits, and stale-data suppression |
 | `ROS2MotionDashboard` | Render before/after joint values so the graph visibly shows the robot moved |
 
 Action nodes carry an optional `trigger` input so you can sequence them in a
