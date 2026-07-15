@@ -1389,6 +1389,48 @@ def test_live_motion_dashboard_keeps_first_pose_as_baseline():
     assert "TARGET" not in svg
 
 
+def test_live_pose_pushes_into_connected_robot_calibration_recorder(monkeypatch):
+    received = []
+    monkeypatch.setitem(
+        live._NODE_REGISTRY,
+        "RobotCalibrationRecorder",
+        lambda ctx: received.append(dict(ctx)) or {
+            "active": True,
+            "samples": 3,
+            "observed": {"shoulder_pan": {"min_deg": -5.0, "max_deg": 10.0}},
+            "report": "recording",
+        },
+    )
+    graph = type("GraphStub", (), {})()
+    graph._edges = [
+        {"from": "manual", "from_port": "pose", "to": "calibration", "to_port": "pose"},
+        {"from": "profile", "from_port": "profile", "to": "calibration", "to_port": "profile"},
+        {"from": "usb", "from_port": "recommended", "to": "calibration", "to_port": "hardware"},
+    ]
+    graph._nodes = {
+        "calibration": {
+            "type": "RobotCalibrationRecorder",
+            "params": {"run_id": "custom_robot_calibration", "safety_margin_deg": 4.0},
+        },
+    }
+    graph._cache = {
+        ("profile", "profile"): {"id": "my_robot", "joints": []},
+        ("usb", "recommended"): {"serial": "ABC123"},
+    }
+    ctx = {"__graph__": graph, "__node_id__": "manual"}
+
+    outputs = live._live_motion_dashboard_outputs(
+        ctx, {"shoulder_pan": 12.0}, "degrees", False, {}
+    )
+
+    assert outputs["calibration"]["active"] is True
+    assert received[0]["action"] == "_sample"
+    assert received[0]["pose"] == {"shoulder_pan": 12.0}
+    assert received[0]["torque_enabled"] is False
+    assert received[0]["profile"]["id"] == "my_robot"
+    assert received[0]["hardware"]["serial"] == "ABC123"
+
+
 def test_ros2_live_stop_reports_numeric_follow_count(monkeypatch):
     monkeypatch.setattr(live, "stop_continuous_follow_services", lambda: {
         "ok": True, "stopped": 2, "report": "stopped 2",
