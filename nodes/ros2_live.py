@@ -1250,6 +1250,23 @@ def _live_motion_dashboard_outputs(
                 outputs[target_id] = dict(ros2_motion_dashboard(dashboard_ctx))
             except Exception:
                 continue
+        elif target_type == "RobotConnectionDashboard":
+            dashboard_fn = _NODE_REGISTRY.get(target_type)
+            if dashboard_fn is None:
+                continue
+            dashboard_ctx = dict(target.get("params") or {})
+            cache = getattr(graph, "_cache", {}) or {}
+            for incoming in list(getattr(graph, "_edges", []) or []):
+                if incoming.get("to") != target_id or incoming.get("to_port") == "pose":
+                    continue
+                cache_key = (incoming.get("from"), incoming.get("from_port"))
+                if cache_key in cache:
+                    dashboard_ctx[str(incoming.get("to_port") or "")] = cache[cache_key]
+            dashboard_ctx["pose"] = dict(pose)
+            try:
+                outputs[target_id] = dict(dashboard_fn(dashboard_ctx))
+            except Exception:
+                continue
         elif target_type == "RobotCalibrationRecorder":
             calibration_fn = _NODE_REGISTRY.get(target_type)
             if calibration_fn is None:
@@ -1341,6 +1358,11 @@ def _teach_monitor_worker(run_id: str, item: dict[str, Any]) -> None:
                     return
                 item["outputs"] = outputs
                 item["downstream_outputs"] = downstream_outputs
+                item["downstream_types"] = {
+                    str(edge.get("to") or ""): str((getattr(ctx.get("__graph__"), "_nodes", {}).get(str(edge.get("to") or "")) or {}).get("type") or "")
+                    for edge in list(getattr(ctx.get("__graph__"), "_edges", []) or [])
+                    if edge.get("from") == str(ctx.get("__node_id__") or "") and edge.get("from_port") == "pose"
+                }
                 item["updated_at"] = time.time()
                 item["error"] = ""
         except Exception as exc:
@@ -1407,7 +1429,7 @@ def runtime_status() -> dict[str, Any]:
                 monitors.append({
                     "run_id": run_id,
                     "node_id": node_id,
-                    "node_type": "ROS2MotionDashboard",
+                    "node_type": str(item.get("downstream_types", {}).get(node_id) or "live downstream"),
                     "outputs": dict(outputs or {}),
                     "updated_at": item.get("updated_at"),
                     "error": "",
