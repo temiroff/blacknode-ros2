@@ -36,6 +36,8 @@ from . import rosbridge_service
 _CATEGORY = "ROS 2"
 _continuous_follow_lock = threading.Lock()
 _continuous_follow_runs: dict[str, dict[str, Any]] = {}
+_leader_follower_lock = threading.Lock()
+_leader_follower_runs: dict[str, dict[str, Any]] = {}
 _teach_monitor_lock = threading.Lock()
 _teach_monitors: dict[str, dict[str, Any]] = {}
 
@@ -1434,12 +1436,25 @@ def runtime_status() -> dict[str, Any]:
                     "updated_at": item.get("updated_at"),
                     "error": "",
                 })
+    with _leader_follower_lock:
+        for run_id, item in _leader_follower_runs.items():
+            monitors.append({
+                "run_id": run_id,
+                "node_id": str(item.get("ctx", {}).get("__node_id__") or ""),
+                "node_type": "ROS2LeaderFollower",
+                "outputs": dict(item.get("last") or {}),
+                "updated_at": item.get("updated_at"),
+                "error": "",
+            })
     return {
         "ok": True,
         "active": bool(monitors),
         "node_outputs": monitors,
-        "managed_runs": [{"run_id": run_id, "kind": "manual_move"} for run_id in _teach_monitors],
-        "report": f"{len(_teach_monitors)} manual-move live monitor(s) active",
+        "managed_runs": (
+            [{"run_id": run_id, "kind": "manual_move"} for run_id in _teach_monitors]
+            + [{"run_id": run_id, "kind": "leader_follower"} for run_id in _leader_follower_runs]
+        ),
+        "report": f"{len(_teach_monitors)} manual-move monitor(s), {len(_leader_follower_runs)} leader-follower controller(s) active",
     }
 
 
@@ -1452,17 +1467,20 @@ def stop_runtime_services() -> dict[str, Any]:
         rb.release_joint_stream(item.get("session"))
     follow_result = stop_continuous_follow_services()
     stopped_follow = int(follow_result.get("stopped") or 0)
+    leader_follower_result = stop_leader_follower_services()
+    stopped_leader_follower = int(leader_follower_result.get("stopped") or 0)
     closed_sessions = rb.close_joint_streams()
     return {
-        "ok": True,
+        "ok": bool(follow_result.get("ok", True) and leader_follower_result.get("ok", True)),
         "stopped": {
             "streams": len(items),
-            "managed_runs": stopped_follow,
+            "managed_runs": stopped_follow + stopped_leader_follower,
             "detached": 0,
             "joint_streams": closed_sessions,
         },
         "report": (
-            f"stopped {len(items)} manual-move monitor(s) and {stopped_follow} follow controller(s); "
+            f"stopped {len(items)} manual-move monitor(s), {stopped_follow} follow controller(s), "
+            f"and {stopped_leader_follower} leader-follower controller(s); "
             f"closed {closed_sessions} joint stream(s)"
         ),
     }
@@ -2357,6 +2375,296 @@ def ros2_continuous_follow_detection_joint(ctx: dict) -> dict:
         running=True,
         report=f"persistent follow '{run_id}' started at {loop_hz:g} Hz; cook is complete, use action=stop or Stop All to stop.",
     )
+
+
+def _leader_follower_result(
+    *, running: bool = False, armed: bool = False, live: bool = False,
+    commanded: bool = False, leader_pose: dict[str, float] | None = None,
+    follower_pose: dict[str, float] | None = None, target: dict[str, float] | None = None,
+    clamped: list[str] | None = None, report: str = "",
+) -> dict[str, Any]:
+    leader_pose = dict(leader_pose or {})
+    follower_pose = dict(follower_pose or {})
+    target = dict(target or {})
+    clamped = list(clamped or [])
+    state = "ARMED / FOLLOWING" if armed and commanded else "ARMED / WAITING" if armed else "PREVIEW / DISARMED"
+    accent = "#22c55e" if armed and live else "#f59e0b"
+    names = list(target or leader_pose)
+    display_names = names[:6]
+    rows = []
+    for index, name in enumerate(display_names):
+        y = 246 + index * 42
+        leader_value = leader_pose.get(name)
+        follower_value = follower_pose.get(name)
+        target_value = target.get(name)
+        rows.append(
+            f'<text x="48" y="{y}" fill="#cbd5e1" font-family="monospace" font-size="14">{_svg_text(name, 20)}</text>'
+            f'<text x="360" y="{y}" text-anchor="end" fill="#f8fafc" font-family="monospace" font-size="14">{leader_value:.2f}°</text>'
+            f'<text x="570" y="{y}" text-anchor="end" fill="#f8fafc" font-family="monospace" font-size="14">{target_value:.2f}°</text>'
+            f'<text x="780" y="{y}" text-anchor="end" fill="#f8fafc" font-family="monospace" font-size="14">{follower_value:.2f}°</text>'
+        )
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="840" height="560" viewBox="0 0 840 560">
+<rect width="840" height="560" rx="24" fill="#0b1020"/>
+<rect x="24" y="24" width="792" height="112" rx="18" fill="#172033" stroke="{accent}" stroke-width="2"/>
+<text x="48" y="66" fill="#f8fafc" font-family="Arial,sans-serif" font-size="24" font-weight="800">LEADER → FOLLOWER</text>
+<text x="48" y="98" fill="#93a4b8" font-family="Arial,sans-serif" font-size="14">Move the released leader by hand; follower commands remain bounded and clamped.</text>
+<rect x="590" y="50" width="198" height="48" rx="24" fill="{accent}"/>
+<text x="689" y="80" text-anchor="middle" fill="#07111f" font-family="Arial,sans-serif" font-size="14" font-weight="900">{state}</text>
+<rect x="24" y="158" width="792" height="330" rx="18" fill="#172033"/>
+<text x="48" y="198" fill="#93a4b8" font-family="Arial,sans-serif" font-size="13" font-weight="700">JOINT</text>
+<text x="360" y="198" text-anchor="end" fill="#93a4b8" font-family="Arial,sans-serif" font-size="13" font-weight="700">LEADER</text>
+<text x="570" y="198" text-anchor="end" fill="#93a4b8" font-family="Arial,sans-serif" font-size="13" font-weight="700">SAFE TARGET</text>
+<text x="780" y="198" text-anchor="end" fill="#93a4b8" font-family="Arial,sans-serif" font-size="13" font-weight="700">FOLLOWER</text>
+<line x1="48" y1="212" x2="780" y2="212" stroke="#334155"/>
+{''.join(rows) if rows else '<text x="48" y="252" fill="#f59e0b" font-family="Arial,sans-serif" font-size="16">Waiting for both robot joint streams…</text>'}
+{f'<text x="48" y="478" fill="#64748b" font-family="Arial,sans-serif" font-size="12">+{len(names) - 6} additional mapped joint(s) in summary output</text>' if len(names) > 6 else ''}
+<text x="48" y="522" fill="{accent}" font-family="Arial,sans-serif" font-size="14" font-weight="700">{_svg_text(report, 105)}</text>
+</svg>'''
+    summary = {
+        "running": running, "live": live, "armed": armed, "commanded": commanded,
+        "leader_pose": leader_pose, "follower_pose": follower_pose, "target": target,
+        "joints": names, "clamped": clamped, "report": report,
+    }
+    return {
+        **summary,
+        "joint_count": len(names),
+        "dashboard": _svg_data(svg),
+        "summary": summary,
+    }
+
+
+def _stop_leader_follower(run_id: str) -> bool:
+    with _leader_follower_lock:
+        item = _leader_follower_runs.pop(run_id, None)
+    if item is None:
+        return False
+    item["stop"].set()
+    thread = item.get("thread")
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    return True
+
+
+def stop_leader_follower_services() -> dict[str, Any]:
+    with _leader_follower_lock:
+        run_ids = list(_leader_follower_runs)
+    stopped = sum(1 for run_id in run_ids if _stop_leader_follower(run_id))
+    return {"ok": True, "stopped": stopped, "report": f"stopped {stopped} leader-follower controller(s)"}
+
+
+def update_leader_follower_config(run_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    with _leader_follower_lock:
+        item = _leader_follower_runs.get(run_id)
+        if item is None:
+            return {"ok": False, "report": f"leader-follower '{run_id}' is not running"}
+        item["ctx"].update(values)
+    return {"ok": True, "report": f"updated leader-follower '{run_id}'"}
+
+
+def leader_follower_runtime_status() -> list[dict[str, Any]]:
+    with _leader_follower_lock:
+        return [
+            {
+                "run_id": run_id,
+                "armed": bool(item.get("ctx", {}).get("armed", False)),
+                "loop_hz": float(item.get("ctx", {}).get("loop_hz") or 10.0),
+                "report": str(item.get("last", {}).get("report") or ""),
+            }
+            for run_id, item in _leader_follower_runs.items()
+            if item.get("thread") is not None and item["thread"].is_alive()
+        ]
+
+
+def _leader_follower_step(item: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    armed = bool(ctx.get("armed", False))
+    leader = ctx.get("leader_robot") if isinstance(ctx.get("leader_robot"), dict) else {}
+    follower = ctx.get("follower_robot") if isinstance(ctx.get("follower_robot"), dict) else {}
+    leader_driver = leader.get("driver") if isinstance(leader.get("driver"), dict) else {}
+    follower_driver = follower.get("driver") if isinstance(follower.get("driver"), dict) else {}
+    leader_id = str(leader_driver.get("hardware_id") or "")
+    follower_id = str(follower_driver.get("hardware_id") or "")
+    if not leader_id or not follower_id:
+        return _leader_follower_result(running=True, armed=armed, report="BLOCKED: both robots need USB hardware identities.")
+    if leader_id == follower_id:
+        return _leader_follower_result(running=True, armed=armed, report="BLOCKED: leader and follower resolve to the same USB device.")
+    if bool(ctx.get("require_calibration", True)) and (
+        not leader_driver.get("calibration_path") or not follower_driver.get("calibration_path")
+    ):
+        return _leader_follower_result(running=True, armed=armed, report="BLOCKED: save hardware calibration for both leader and follower.")
+    if _resolve_transport(ctx) != "rosbridge":
+        return _leader_follower_result(running=True, armed=armed, report="BLOCKED: leader-follower currently requires rosbridge transport.")
+
+    host = str(ctx.get("host") or leader.get("host") or follower.get("host") or "127.0.0.1")
+    port = int(ctx.get("port") or leader.get("port") or follower.get("port") or 9090)
+    leader_signature = (host, port, str(leader.get("state_topic") or "/leader/joint_states"), str(leader.get("command_topic") or "/leader/joint_commands"), str(leader.get("config_topic") or "/leader/joint_config"))
+    follower_signature = (host, port, str(follower.get("state_topic") or "/follower/joint_states"), str(follower.get("command_topic") or "/follower/joint_commands"), str(follower.get("config_topic") or "/follower/joint_config"))
+    for role, signature in (("leader", leader_signature), ("follower", follower_signature)):
+        if item.get(f"{role}_signature") != signature:
+            rb.release_joint_stream(item.get(f"{role}_session"), discard=True)
+            item[f"{role}_session"] = rb.acquire_joint_stream(*signature, timeout=min(2.0, float(ctx.get("timeout") or 10.0)))
+            item[f"{role}_signature"] = signature
+    leader_session = item["leader_session"]
+    follower_session = item["follower_session"]
+    leader_pose_rad, leader_config, leader_age = leader_session.snapshot()
+    follower_pose_rad, follower_config, follower_age = follower_session.snapshot()
+    if not leader_pose_rad:
+        leader_session.wait_for_pose(1.0)
+        leader_pose_rad, leader_config, leader_age = leader_session.snapshot()
+    if not follower_pose_rad:
+        follower_session.wait_for_pose(1.0)
+        follower_pose_rad, follower_config, follower_age = follower_session.snapshot()
+    stale_after = max(0.25, float(ctx.get("stale_after") or 0.75))
+    if not leader_pose_rad or not follower_pose_rad or leader_age > stale_after or follower_age > stale_after:
+        return _leader_follower_result(running=True, armed=armed, report="WAITING: one robot joint stream is missing or stale; commands suppressed.")
+    if not leader_config:
+        leader_config = leader_session.wait_for_config(0.5)
+    if not follower_config:
+        follower_config = follower_session.wait_for_config(0.5)
+
+    units = "degrees"
+    leader_pose = {name: math.degrees(value) for name, value in leader_pose_rad.items()}
+    follower_pose = {name: math.degrees(value) for name, value in follower_pose_rad.items()}
+    joint_map = ctx.get("joint_map") if isinstance(ctx.get("joint_map"), dict) else {}
+    mapping = {str(src): str(dst) for src, dst in joint_map.items()} if joint_map else {
+        name: name for name in leader_pose_rad if name in follower_pose_rad
+    }
+    scales = ctx.get("scale") if isinstance(ctx.get("scale"), dict) else {}
+    offsets = ctx.get("offset_deg") if isinstance(ctx.get("offset_deg"), dict) else {}
+    limits = rb.limits_radians(follower_config)
+    target_rad = dict(follower_pose_rad)
+    target: dict[str, float] = {}
+    leader_display: dict[str, float] = {}
+    follower_display: dict[str, float] = {}
+    clamped: list[str] = []
+    max_step = math.radians(max(0.05, float(ctx.get("max_step_deg") or 2.0)))
+    deadband = math.radians(max(0.0, float(ctx.get("deadband_deg") or 0.15)))
+    for source, destination in mapping.items():
+        if source not in leader_pose_rad or destination not in follower_pose_rad:
+            continue
+        scale = _finite_float(scales.get(source))
+        offset = _finite_float(offsets.get(source))
+        desired = leader_pose_rad[source] * (1.0 if scale is None else scale) + math.radians(0.0 if offset is None else offset)
+        bounded = min(follower_pose_rad[destination] + max_step, max(follower_pose_rad[destination] - max_step, desired))
+        if destination in limits:
+            lower, upper = limits[destination]
+            limited = min(upper, max(lower, bounded))
+            if abs(limited - desired) > 1e-9:
+                clamped.append(destination)
+            bounded = limited
+        target_rad[destination] = bounded
+        leader_display[destination] = math.degrees(leader_pose_rad[source])
+        follower_display[destination] = math.degrees(follower_pose_rad[destination])
+        target[destination] = math.degrees(bounded)
+    if not target:
+        return _leader_follower_result(running=True, armed=armed, live=True, report="BLOCKED: leader and follower have no mapped joint names.")
+    if bool(ctx.get("require_leader_released", True)) and leader_config.get("torque_enabled") is not False:
+        return _leader_follower_result(running=True, armed=armed, live=True, leader_pose=leader_display, follower_pose=follower_display, target=target, report="BLOCKED: release leader torque before following.")
+    if armed and (not follower_config or follower_config.get("commands_allowed") is False or any(name not in limits for name in target)):
+        return _leader_follower_result(running=True, armed=armed, live=True, leader_pose=leader_display, follower_pose=follower_display, target=target, report="BLOCKED: follower safety config/limits are incomplete.")
+    commanded = armed and any(abs(target_rad[name] - follower_pose_rad[name]) > deadband for name in target)
+    if commanded:
+        follower_session.publish(target_rad)
+    report = (
+        f"Following {len(target)} joint(s) at bounded targets." if commanded
+        else f"Previewing {len(target)} mapped joint(s); set armed=true to move follower." if not armed
+        else "Leader and follower are within the deadband."
+    )
+    return _leader_follower_result(
+        running=True, armed=armed, live=True, commanded=commanded,
+        leader_pose=leader_display, follower_pose=follower_display, target=target,
+        clamped=clamped, report=report,
+    )
+
+
+def _leader_follower_worker(run_id: str, item: dict[str, Any]) -> None:
+    try:
+        while not item["stop"].is_set():
+            with _leader_follower_lock:
+                if _leader_follower_runs.get(run_id) is not item:
+                    return
+                ctx = dict(item["ctx"])
+            try:
+                result = _leader_follower_step(item, ctx)
+            except Exception as exc:
+                result = _leader_follower_result(running=True, armed=bool(ctx.get("armed")), report=f"leader-follower FAILED: {exc}; commands suppressed.")
+            with _leader_follower_lock:
+                if _leader_follower_runs.get(run_id) is item:
+                    item["last"] = result
+                    item["updated_at"] = time.time()
+            hz = max(1.0, min(30.0, float(ctx.get("loop_hz") or 10.0)))
+            item["stop"].wait(1.0 / hz)
+    finally:
+        rb.release_joint_stream(item.get("leader_session"))
+        rb.release_joint_stream(item.get("follower_session"))
+
+
+@node(
+    name="ROS2LeaderFollower",
+    live=True,
+    category=_CATEGORY,
+    description="Stream a released leader robot pose into a separately calibrated follower with mapping, limits, deadband, and bounded steps.",
+    inputs={
+        "trigger": AnyPort,
+        "action": Enum(["start", "stop", "check"], default="start"),
+        "run_id": Text(default="leader_follower"),
+        "leader_robot": Dict,
+        "follower_robot": Dict,
+        "transport": Enum(["auto", "native", "rosbridge"], default="auto"),
+        "host": Text(default="127.0.0.1"),
+        "port": Int(default=9090),
+        "joint_map": Dict,
+        "scale": Dict,
+        "offset_deg": Dict,
+        "loop_hz": Float(default=10.0),
+        "max_step_deg": Float(default=2.0),
+        "deadband_deg": Float(default=0.15),
+        "stale_after": Float(default=0.75),
+        "require_calibration": Bool(default=True),
+        "require_leader_released": Bool(default=True),
+        "armed": Bool(default=False),
+        "timeout": Float(default=10.0),
+    },
+    outputs={
+        "running": Bool, "live": Bool, "armed": Bool, "commanded": Bool,
+        "leader_pose": Dict, "follower_pose": Dict, "target": Dict,
+        "clamped": List, "joint_count": Int, "dashboard": Image,
+        "summary": Dict, "report": Text,
+    },
+)
+def ros2_leader_follower(ctx: dict) -> dict:
+    action = str(ctx.get("action") or "start").strip().lower()
+    run_id = str(ctx.get("run_id") or "leader_follower").strip() or "leader_follower"
+    if action == "stop":
+        stopped = _stop_leader_follower(run_id)
+        return _leader_follower_result(report=f"leader-follower '{run_id}' {'stopped' if stopped else 'was not running'}.")
+    with _leader_follower_lock:
+        existing = _leader_follower_runs.get(run_id)
+        if existing is not None and not existing["thread"].is_alive():
+            _leader_follower_runs.pop(run_id, None)
+            existing = None
+    if action == "check":
+        if existing is None:
+            return _leader_follower_result(report=f"leader-follower '{run_id}' is not running.")
+        with _leader_follower_lock:
+            return dict(existing.get("last") or _leader_follower_result(running=True, armed=bool(ctx.get("armed"))))
+    if existing is not None:
+        with _leader_follower_lock:
+            existing["ctx"] = dict(ctx)
+            latest = dict(existing.get("last") or _leader_follower_result(running=True, armed=bool(ctx.get("armed"))))
+        latest["running"] = True
+        return latest
+    item: dict[str, Any] = {
+        "ctx": dict(ctx), "stop": threading.Event(), "leader_session": None,
+        "follower_session": None, "leader_signature": None, "follower_signature": None,
+        "last": _leader_follower_result(running=True, armed=bool(ctx.get("armed")), report="Waiting for both robots…"),
+        "updated_at": time.time(),
+    }
+    thread = threading.Thread(target=_leader_follower_worker, args=(run_id, item), name=f"blacknode-leader-follower-{run_id}", daemon=True)
+    item["thread"] = thread
+    with _leader_follower_lock:
+        _leader_follower_runs[run_id] = item
+    thread.start()
+    return dict(item["last"])
 
 
 @node(
