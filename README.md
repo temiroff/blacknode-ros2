@@ -72,6 +72,7 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2JointState` | Read any robot's current pose from a `JointState` topic (radians or degrees) |
 | `ROS2RotateJoint` | Move one joint on a **real** robot — gated by `armed`, syncs to the current pose, clamps to limits, streams a heartbeat |
 | `ROS2FollowDetectionJoint` | Visual-servo one joint toward a CV2 detection center — gated by `armed`, clamps to limits, streams a heartbeat |
+| `ROS2ContinuousFollowDetectionJoint` | Cook once to start a persistent visual-servo service with one long-lived joint-state subscription and command publisher |
 | `ROS2MotionDashboard` | Render before/after joint values so the graph visibly shows the robot moved |
 
 Action nodes carry an optional `trigger` input so you can sequence them in a
@@ -210,7 +211,7 @@ builds a small ROS Jazzy rosbridge image on first use, and reuses the
 but the user does not need to start Docker or rosbridge manually.
 
 The `ROS2RosbridgeStatus`, `ROS2RobotDiscovery`, `ROS2JointState`,
-`ROS2RotateJoint`, `ROS2FollowDetectionJoint`, and `ROS2MotionDashboard` nodes
+`ROS2RotateJoint`, `ROS2FollowDetectionJoint`, `ROS2ContinuousFollowDetectionJoint`, and `ROS2MotionDashboard` nodes
 drive **any** robot that exposes its joints as `sensor_msgs/msg/JointState` over
 a rosbridge WebSocket, using `roslibpy`. Topics, joint name, units, and follow
 tuning are all node inputs.
@@ -222,7 +223,17 @@ tuning are all node inputs.
 | `config_topic` | (empty) | optional latched `std_msgs/String` JSON with `commands_allowed` + per-joint `lower`/`upper` limits |
 | `units` | `radians` | `radians` (ROS standard) or `degrees` for the values you type and see |
 | `detection` / `detection_url` | `{}` / empty | CV2 detection dict or live detector JSON URL with `center.x` for `ROS2FollowDetectionJoint` |
+| `detection_stream` | `{}` | Latest-value stream handle from `CV2ColorObjectStream`; preferred by `ROS2ContinuousFollowDetectionJoint` |
 | `gain` / `max_step` | `35` / `8` | convert normalized image error into a bounded actuator step |
+
+The continuous follower is a managed runtime service. Cooking it once starts
+the controller; subsequent cooks update its configuration or report status.
+Frames and commands flow through the service without re-cooking the graph.
+Use `action=stop` or the editor's **Streaming · Stop** control to shut it down.
+Small corrections accumulate into a desired setpoint so servo friction cannot
+stall tracking, while that setpoint remains bounded near measured feedback.
+Stale joint subscriptions are discarded and reacquired automatically, and
+stale detections or feedback suppress motion rather than using old data.
 
 `roslibpy` is installed by **Install prerequisites** in the Packages tab,
 `blacknode packages setup blacknode-ros2`, or `pip install roslibpy` **into the

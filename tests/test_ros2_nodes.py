@@ -7,6 +7,7 @@ available, and skip cleanly otherwise.
 import json
 import math
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -871,7 +872,7 @@ def test_follow_detection_joint_noops_inside_deadband(monkeypatch):
 def test_continuous_follow_runs_until_stopped(monkeypatch):
     called = threading.Event()
 
-    def fake_follow(ctx):
+    def fake_follow(item, ctx):
         called.set()
         return {
             "moved": True,
@@ -884,7 +885,7 @@ def test_continuous_follow_runs_until_stopped(monkeypatch):
             "report": "MOVE LEFT",
         }
 
-    monkeypatch.setattr(live, "ros2_follow_detection_joint", fake_follow)
+    monkeypatch.setattr(live, "_continuous_follow_step", fake_follow)
     live.stop_continuous_follow_services()
     try:
         started = _NODE_REGISTRY["ROS2ContinuousFollowDetectionJoint"]({
@@ -916,6 +917,89 @@ def test_continuous_follow_runs_until_stopped(monkeypatch):
         assert live.continuous_follow_runtime_status() == []
     finally:
         live.stop_continuous_follow_services()
+
+
+def test_continuous_follow_step_reuses_persistent_joint_stream(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.published = []
+
+        def snapshot(self):
+            return ({"shoulder_pan": 0.0, "elbow": 0.25}, {}, 0.01)
+
+        def wait_for_pose(self, timeout):
+            return {"shoulder_pan": 0.0, "elbow": 0.25}
+
+        def publish(self, pose):
+            self.published.append(pose)
+
+    session = FakeSession()
+    acquired = []
+    monkeypatch.setattr(live, "_read_detection_url", lambda *a, **k: ({
+        "found": True,
+        "updated_at": time.time(),
+        "detection": {"found": True, "center": {"x": 100}, "frame_width": 640},
+    }, ""))
+    monkeypatch.setattr(rb, "acquire_joint_stream", lambda *a, **k: acquired.append((a, k)) or session)
+    monkeypatch.setattr(rb, "release_joint_stream", lambda _session: None)
+    item = {"session": None, "session_signature": None}
+    ctx = {
+        "joint": "shoulder_pan",
+        "units": "degrees",
+        "detection_stream": {"url": "http://detector/detection.json", "stream_id": "cube"},
+        "loop_hz": 10.0,
+        "gain": 10.0,
+        "max_step": 2.0,
+        "armed": True,
+    }
+
+    first = live._continuous_follow_step(item, ctx)
+    second = live._continuous_follow_step(item, ctx)
+
+    assert first["running"] is True
+    assert second["running"] is True
+    assert len(acquired) == 1
+    assert len(session.published) == 2
+    assert set(session.published[0]) == {"shoulder_pan", "elbow"}
+    assert session.published[1]["shoulder_pan"] > session.published[0]["shoulder_pan"]
+
+
+def test_continuous_follow_step_resets_stale_joint_stream(monkeypatch):
+    class FakeSession:
+        def snapshot(self):
+            return ({"shoulder_pan": 0.0}, {}, 99.0)
+
+        def wait_for_pose(self, timeout):
+            return {"shoulder_pan": 0.0}
+
+    session = FakeSession()
+    released = []
+    monkeypatch.setattr(live, "_read_detection_url", lambda *a, **k: ({
+        "found": True,
+        "updated_at": time.time(),
+        "detection": {"found": True, "center": {"x": 100}, "frame_width": 640},
+    }, ""))
+    monkeypatch.setattr(rb, "release_joint_stream", released.append)
+    signature = ("127.0.0.1", 9090, "/joint_states", "/joint_commands", "")
+    item = {"session": session, "session_signature": signature, "session_resets": 0}
+    ctx = {
+        "joint": "shoulder_pan",
+        "units": "degrees",
+        "detection_stream": {"url": "http://detector/detection.json", "stream_id": "cube"},
+        "loop_hz": 10.0,
+        "gain": 10.0,
+        "max_step": 2.0,
+        "armed": True,
+    }
+
+    result = live._continuous_follow_step(item, ctx)
+
+    assert result["running"] is False
+    assert "resetting subscription" in result["report"]
+    assert released == [session]
+    assert item["session"] is None
+    assert item["session_signature"] is None
+    assert item["session_resets"] == 1
 
 
 def test_continuous_follow_disarmed_does_not_start():
