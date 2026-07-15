@@ -61,17 +61,12 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2InterfaceShow` | Show a message/service definition — lets AI agents compose valid payloads |
 | `ROS2PackageExecutables` | List executable commands registered by a ROS 2 package |
 | `ROS2Command` | Escape hatch: run any `ros2 ...` subcommand and capture the output |
-| `ROS2NativeStatus` | Preflight direct `rclpy` access to the local ROS 2 graph; no rosbridge required |
-| `ROS2NativeRobotDiscovery` | Detect a direct `rclpy` robot interface and output a generic robot profile |
-| `ROS2NativeJointState` | Read a `JointState` topic through native `rclpy` |
-| `ROS2NativeSetJoint` | Set one joint to an absolute position through native `rclpy`; previews the live pose and target when disarmed, writes only when `armed=true` |
-| `ROS2NativeFollowDetectionJoint` | Visual-servo one joint toward a CV2 detection center through native `rclpy` |
-| `ROS2RosbridgeServer` | Ensure the local rosbridge Docker container is ready; on Windows it also starts Docker Desktop when installed |
-| `ROS2RosbridgeStatus` | Preflight a rosbridge robot connection (roslibpy, WebSocket, optional config) with exact fixes |
-| `ROS2RobotDiscovery` | Detect a connected rosbridge robot and output a generic robot profile with topics, joints, pose, limits, and command permission |
-| `ROS2JointState` | Read any robot's current pose from a `JointState` topic (radians or degrees) |
-| `ROS2RotateJoint` | Move one joint on a **real** robot — gated by `armed`, syncs to the current pose, clamps to limits, streams a heartbeat |
-| `ROS2FollowDetectionJoint` | Visual-servo one joint toward a CV2 detection center — gated by `armed`, clamps to limits, streams a heartbeat |
+| `ROS2Status` | Auto-select native `rclpy` or rosbridge, ensuring the local rosbridge service when needed |
+| `ROS2RobotDiscovery` | Detect a robot over the selected transport and output one standard robot profile |
+| `ROS2JointState` | Read any robot's current pose over the selected transport |
+| `ROS2SetJoint` | Set one absolute joint target; previews live before/target values while disarmed |
+| `ROS2RotateJoint` | Move one joint by a relative delta over the selected transport |
+| `ROS2FollowDetectionJoint` | Visual-servo one joint toward a CV2 detection center over the selected transport |
 | `ROS2ContinuousFollowDetectionJoint` | Cook once to start a persistent visual-servo service with one long-lived joint-state subscription and command publisher |
 | `ROS2MotionDashboard` | Render before/after joint values so the graph visibly shows the robot moved |
 
@@ -95,12 +90,9 @@ Loadable from the editor's Templates tab:
 - **ROS 2 Launch Camera Inspector** — fill any installed ROS package and launch
   file, inspect package executables and live topics, then display one camera
   frame from `/camera/image_raw`
-- **ROS 2 Live Motion Test** — connects to your running rosbridge, reads
-  the live pose, and (once you set `armed=true`) rotates one joint on the real
-  robot, rendering a before/after dashboard that proves it moved
-- **ROS 2 Native Motion Test** — uses direct `rclpy` topic access with no
-  rosbridge, reads the live pose, and (once you set `armed=true`) sets one joint
-  to an absolute target position
+- **ROS 2 Motion Test** — auto-selects the available transport, reads the live
+  pose, and (once you set `armed=true`) moves one joint on the real robot while
+  rendering a before/after dashboard
 
 To verify it visually:
 
@@ -173,10 +165,15 @@ generic USB discovery, permissions, driver descriptors, and driver launch. Once
 a robot driver exposes a ROS-compatible joint interface, the nodes here can read
 and command it through either native `rclpy` or rosbridge.
 
-### Native rclpy, no rosbridge
+### Automatic transport selection
 
-Use this when Blacknode runs on the same machine or WSL environment as the ROS 2
-graph:
+The regular robot nodes expose `transport=auto`. When `rclpy` is importable in
+the Blacknode server environment they use the local ROS 2 graph directly.
+Otherwise they use rosbridge; `ROS2Status` ensures the local rosbridge Docker
+service is ready before continuing. `transport=native` and
+`transport=rosbridge` remain available as advanced overrides.
+
+For a sourced native ROS 2 workspace:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -184,17 +181,17 @@ source /path/to/your_robot_ws/install/setup.bash
 ./start.sh
 ```
 
-The native nodes talk directly to ROS 2 topics:
+The selected path is reported in every node result:
 
 ```text
 Blacknode -> rclpy -> /joint_states + /joint_commands -> robot driver
 ```
 
-Use `ROS2NativeStatus` first, then `ROS2NativeRobotDiscovery` or
-`ROS2NativeJointState`. Use `ROS2NativeSetJoint` for an absolute actuator target
-and `ROS2NativeFollowDetectionJoint` for cube-following from a CV2 detection.
+Use `ROS2Status` first, then `ROS2RobotDiscovery` or `ROS2JointState`. Use
+`ROS2SetJoint` for an absolute actuator target and
+`ROS2FollowDetectionJoint` for cube-following from a CV2 detection.
 
-`ROS2NativeSetJoint`'s `position` input is an **absolute target angle**, not a
+`ROS2SetJoint`'s `position` input is an **absolute target angle**, not a
 delta — `position: 0` means "go to 0°," not "don't move." With `armed=false`
 (the default) it still reads the live pose and computes what the clamped
 target would be, so `before`/`target` show real numbers and the report reads
@@ -202,19 +199,10 @@ target would be, so `before`/`target` show real numbers and the report reads
 set `armed=true`. Only the read (a passive subscribe) happens while disarmed;
 the write (`stream_motion`) is what's actually gated.
 
-### Rosbridge transport
-
-`ROS2RosbridgeServer` removes the separate startup command for local Windows
-workflows. With `action=ensure`, it starts Docker Desktop when necessary,
+On Windows, the automatic rosbridge path starts Docker Desktop when necessary,
 builds a small ROS Jazzy rosbridge image on first use, and reuses the
 `blacknode-rosbridge` container afterward. Docker Desktop must be installed,
-but the user does not need to start Docker or rosbridge manually.
-
-The `ROS2RosbridgeStatus`, `ROS2RobotDiscovery`, `ROS2JointState`,
-`ROS2RotateJoint`, `ROS2FollowDetectionJoint`, `ROS2ContinuousFollowDetectionJoint`, and `ROS2MotionDashboard` nodes
-drive **any** robot that exposes its joints as `sensor_msgs/msg/JointState` over
-a rosbridge WebSocket, using `roslibpy`. Topics, joint name, units, and follow
-tuning are all node inputs.
+but the user does not need to choose or start rosbridge manually.
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -240,20 +228,16 @@ stale detections or feedback suppress motion rather than using old data.
 Blacknode server environment**. Without it the nodes load and return a
 structured "roslibpy not installed" result, and the Packages tab flags it.
 
-The included **ROS 2 Live Motion Test** template is the rosbridge version. The
-included **ROS 2 Native Motion Test** template is the direct `rclpy` version.
-Both pre-fill the common topics (`/joint_states`, `/joint_commands`,
-`/joint_config`) and leave the joint name for your robot.
+The included **ROS 2 Motion Test** pre-fills the common topics
+(`/joint_states`, `/joint_commands`, `/joint_config`) and leaves the joint name
+for your robot. The same graph runs on native ROS 2 and Windows rosbridge.
 
 **To move a real robot:**
 
 1. Use `blacknode-robot` to discover the USB device and start the robot driver.
 2. Make sure that driver publishes `/joint_states` and accepts
    `/joint_commands`.
-   - Native path: start Blacknode from the sourced ROS 2 environment and use
-     `ROS2NativeStatus`.
-   - Rosbridge path: run `ROS2RosbridgeServer` to ensure
-     `ws://127.0.0.1:9090` is ready, then use `ROS2RosbridgeStatus`.
+   `ROS2Status` selects and prepares the available transport automatically.
 3. In Blacknode, load **ROS 2 Live Motion Test** and press **Run** — the
    dashboard shows the live pose with `armed=false` (no motion).
 4. Set the `ROS2RotateJoint` node's `armed=true` and recook. It syncs to the

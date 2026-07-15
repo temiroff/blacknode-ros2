@@ -91,6 +91,7 @@ def ensure_local_rosbridge(host: str, port: int, timeout: float) -> str:
 @node(
     name="ROS2RosbridgeServer",
     category="ROS 2",
+    hidden=True,
     description="Ensure a local rosbridge Docker service is running, so Windows workflows need no separate startup command.",
     inputs={
         "action": Enum(["ensure", "check", "stop"], default="ensure"),

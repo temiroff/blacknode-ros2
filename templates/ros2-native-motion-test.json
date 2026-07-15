@@ -1,7 +1,7 @@
 {
   "kind": "blacknode.workflow",
   "schema_version": 1,
-  "name": "ROS 2 Native Motion Test",
+  "name": "ROS 2 Motion Test — Absolute Target",
   "saved_at": "2026-07-11T00:00:00",
   "entrypoint": {
     "node_id": "out",
@@ -9,14 +9,14 @@
   },
   "metadata": {
     "template": true,
-    "description": "Prove Blacknode moves a real robot through native rclpy with no rosbridge. Start Blacknode from a sourced ROS 2 shell, Run to preflight and read the live pose, then set Native Set Joint armed=true to move the chosen joint. Safe by default: armed is off.",
+    "description": "Read and move a real robot through one generic ROS 2 graph. Blacknode selects native rclpy when available or prepares rosbridge automatically, then previews an absolute joint target before arming.",
     "color": "#2e9fe6",
     "required_packages": ["blacknode-ros2"]
   },
   "node_meta": {
     "status": {
       "id": "status",
-      "type": "ROS2NativeStatus",
+      "type": "ROS2Status",
       "params": {
         "state_topic": "/joint_states",
         "command_topic": "/joint_commands",
@@ -49,7 +49,7 @@
     },
     "live": {
       "id": "live",
-      "type": "ROS2NativeJointState",
+      "type": "ROS2JointState",
       "params": {
         "topic": "/joint_states",
         "units": "degrees",
@@ -80,7 +80,7 @@
     },
     "set_joint": {
       "id": "set_joint",
-      "type": "ROS2NativeSetJoint",
+      "type": "ROS2SetJoint",
       "params": {
         "state_topic": "/joint_states",
         "command_topic": "/joint_commands",
@@ -162,10 +162,11 @@
         "units": "degrees"
       },
       "pos": [1280, 200],
-      "inputs": ["joint", "before", "after", "target", "moved", "units"],
+      "inputs": ["joint", "pose", "before", "after", "target", "moved", "units"],
       "outputs": ["dashboard", "summary"],
       "input_types": {
         "joint": "Text",
+        "pose": "Dict",
         "before": "Dict",
         "after": "Dict",
         "target": "Dict",
@@ -210,6 +211,12 @@
       "from_port": "report",
       "to": "set_joint",
       "to_port": "trigger"
+    },
+    {
+      "from": "live",
+      "from_port": "pose",
+      "to": "dashboard",
+      "to_port": "pose"
     },
     {
       "from": "set_joint",

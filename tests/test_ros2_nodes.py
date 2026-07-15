@@ -4,11 +4,13 @@ The no-backend contract (structured error, never raises) is always exercised.
 Integration tests run only when a real backend (native ros2 or Docker) is
 available, and skip cleanly otherwise.
 """
+import base64
 import json
 import math
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,9 +44,13 @@ EXPECTED_NODES = [
     "ROS2Command",
     "ROS2RosbridgeStatus",
     "ROS2RosbridgeServer",
+    "ROS2Status",
     "ROS2RobotDiscovery",
     "ROS2JointState",
+    "ROS2ManualMove",
+    "ROS2TeachMode",
     "ROS2RotateJoint",
+    "ROS2SetJoint",
     "ROS2FollowDetectionJoint",
     "ROS2ContinuousFollowDetectionJoint",
     "ROS2NativeStatus",
@@ -86,6 +92,72 @@ def test_rosbridge_server_reports_missing_docker(monkeypatch):
 
     assert result["ready"] is False
     assert "install Docker Desktop" in result["report"]
+
+
+def test_generic_status_prefers_native_when_rclpy_is_available(monkeypatch):
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(live, "ros2_native_status", lambda ctx: {
+        "connected": True, "ready": True, "topics": ["/joint_states"], "config": {}, "report": "native ready",
+    })
+    monkeypatch.setattr(service, "ros2_rosbridge_server", lambda ctx: pytest.fail("rosbridge must not start"))
+
+    result = _NODE_REGISTRY["ROS2Status"]({"transport": "auto"})
+
+    assert result["transport"] == "native"
+    assert result["ready"] is True
+    assert "auto-selected" in result["report"]
+
+
+def test_generic_status_falls_back_to_rosbridge_and_ensures_service(monkeypatch):
+    monkeypatch.setattr(nr, "available", lambda: (False, "missing rclpy"))
+    monkeypatch.setattr(service, "ros2_rosbridge_server", lambda ctx: {"ready": True, "report": "server ready"})
+    monkeypatch.setattr(live, "ros2_rosbridge_status", lambda ctx: {
+        "connected": True, "ready": True, "config": {}, "report": "bridge ready",
+    })
+
+    result = _NODE_REGISTRY["ROS2Status"]({"transport": "auto", "ensure_rosbridge": True})
+
+    assert result["transport"] == "rosbridge"
+    assert result["ready"] is True
+    assert "bridge ready" in result["report"]
+
+
+def test_transport_specific_nodes_are_hidden_compatibility_aliases():
+    for name in [
+        "ROS2NativeStatus",
+        "ROS2NativeRobotDiscovery",
+        "ROS2NativeJointState",
+        "ROS2NativeSetJoint",
+        "ROS2NativeFollowDetectionJoint",
+        "ROS2RosbridgeStatus",
+        "ROS2RosbridgeServer",
+    ]:
+        assert _NODE_REGISTRY[name]._bn_hidden is True
+
+
+def test_generic_set_joint_auto_rosbridge_preview_never_writes(monkeypatch):
+    monkeypatch.setattr(nr, "available", lambda: (False, "missing rclpy"))
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+    monkeypatch.setattr(rb, "read_config", lambda *args, **kwargs: {
+        "commands_allowed": True,
+        "limits": {"shoulder_pan": {"lower": -1.0, "upper": 1.0}},
+    })
+    monkeypatch.setattr(rb, "read_pose", lambda *args, **kwargs: {"shoulder_pan": 0.25})
+    monkeypatch.setattr(rb, "stream_motion", lambda *args, **kwargs: pytest.fail("disarmed preview must not write"))
+
+    result = _NODE_REGISTRY["ROS2SetJoint"]({
+        "transport": "auto",
+        "joint": "shoulder_pan",
+        "position": 30.0,
+        "units": "degrees",
+        "armed": False,
+        "config_topic": "/joint_config",
+    })
+
+    assert result["moved"] is False
+    assert result["before"]["shoulder_pan"] == pytest.approx(math.degrees(0.25))
+    assert result["target"]["shoulder_pan"] == pytest.approx(30.0)
+    assert "PREVIEW (not armed)" in result["report"]
 
 
 def test_templates_validate():
@@ -491,6 +563,214 @@ def test_native_joint_state_reads_pose(monkeypatch):
     assert result["pose"]["gripper"] == 45.0
     assert result["names"] == ["gripper"]
     assert "native rclpy" in result["report"]
+
+
+def test_manual_move_releases_torque_and_keeps_pose_visible(monkeypatch):
+    published = []
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(nr, "publish_string", lambda topic, value, timeout: published.append((topic, value)) or {"ok": True})
+    monkeypatch.setattr(nr, "read_config", lambda *a, **k: {
+        "commands_allowed": False,
+        "torque_enabled": False,
+        "teach_mode": True,
+        "last_error": "",
+    })
+    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {"shoulder_pan": math.radians(12.5)})
+
+    result = _NODE_REGISTRY["ROS2ManualMove"]({
+        "action": "release",
+        "transport": "native",
+        "units": "degrees",
+    })
+
+    assert result["live"] is True
+    assert result["mode"] == "released"
+    assert result["torque_enabled"] is False
+    assert math.isclose(result["pose"]["shoulder_pan"], 12.5)
+    assert json.loads(published[0][1]) == {"action": "enter_teach"}
+    assert "support the arm" in result["report"]
+
+
+def test_manual_move_hold_reports_safe_acknowledgement(monkeypatch):
+    monkeypatch.setattr(rb, "available", lambda: (True, ""))
+    monkeypatch.setattr(rb, "publish_string", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(rb, "read_config", lambda *a, **k: {
+        "commands_allowed": True,
+        "torque_enabled": True,
+        "teach_mode": False,
+        "last_error": "",
+    })
+    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: {"gripper": math.radians(20.0)})
+
+    result = _NODE_REGISTRY["ROS2ManualMove"]({"action": "hold", "transport": "rosbridge"})
+
+    assert result["live"] is True
+    assert result["mode"] == "hold"
+    assert result["torque_enabled"] is True
+    assert "live pose monitoring is active" in result["report"]
+
+
+def test_manual_move_dashboard_separates_control_from_robot_state():
+    dashboard = live._teach_dashboard(
+        {"shoulder_pan": 12.5},
+        "degrees",
+        False,
+        "Holding current pose.",
+        action="check",
+        live=True,
+    )
+    svg = base64.b64decode(dashboard.split(",", 1)[1]).decode("utf-8")
+
+    assert "CONTROL: MONITOR ONLY • LIVE" in svg
+    assert "ROBOT: HOLDING • TORQUE ON" in svg
+
+
+def test_rosbridge_string_control_publish_waits_and_repeats(monkeypatch):
+    events = []
+
+    class FakeTopic:
+        def __init__(self, ros, topic, message_type):
+            events.append(("topic", topic, message_type))
+
+        def advertise(self):
+            events.append(("advertise",))
+
+        def publish(self, message):
+            events.append(("publish", message))
+
+        def unadvertise(self):
+            events.append(("unadvertise",))
+
+    monkeypatch.setattr(rb, "get_connection", lambda *a, **k: object())
+    monkeypatch.setattr(rb, "roslibpy", SimpleNamespace(Topic=FakeTopic, Message=lambda value: value))
+    monkeypatch.setattr(rb.time, "sleep", lambda seconds: events.append(("sleep", seconds)))
+
+    result = rb.publish_string("127.0.0.1", 9090, "/robot_control", '{"action":"enter_teach"}')
+
+    assert result == {"ok": True, "sent": 3}
+    assert len([event for event in events if event[0] == "publish"]) == 3
+    assert events[-1] == ("unadvertise",)
+
+
+def test_joint_stream_seed_config_replaces_stale_torque_state():
+    session = rb.JointStreamSession.__new__(rb.JointStreamSession)
+    session._data_lock = threading.Lock()
+    session._config_event = threading.Event()
+    session._config = {"torque_enabled": True, "mode": "hold"}
+
+    session.seed_config({"torque_enabled": False, "mode": "teach"})
+
+    assert session.wait_for_config(0) == {"torque_enabled": False, "mode": "teach"}
+
+
+def test_joint_stream_release_retains_idle_subscription_until_explicit_stop(monkeypatch):
+    key = ("127.0.0.1", 9090, "/joint_states", "/joint_commands", "/joint_config")
+    closed = []
+    session = SimpleNamespace(key=key, _users=1, close=lambda: closed.append(True))
+    monkeypatch.setattr(rb, "_joint_streams", {key: session})
+
+    rb.release_joint_stream(session)
+
+    assert session._users == 0
+    assert rb._joint_streams[key] is session
+    assert closed == []
+
+    assert rb.close_joint_streams() == 1
+    assert rb._joint_streams == {}
+    assert closed == [True]
+
+
+def test_joint_stream_release_can_discard_a_stale_subscription(monkeypatch):
+    key = ("127.0.0.1", 9090, "/joint_states", "/joint_commands", "/joint_config")
+    closed = []
+    session = SimpleNamespace(key=key, _users=1, close=lambda: closed.append(True))
+    monkeypatch.setattr(rb, "_joint_streams", {key: session})
+
+    rb.release_joint_stream(session, discard=True)
+
+    assert session._users == 0
+    assert rb._joint_streams == {}
+    assert closed == [True]
+
+
+def test_existing_manual_monitor_receives_confirmed_release_config(monkeypatch):
+    seeded = []
+    session = SimpleNamespace(seed_config=lambda config: seeded.append(dict(config)))
+    item = {
+        "ctx": {"action": "hold"},
+        "outputs": {"torque_enabled": True},
+        "dashboard_baselines": {"dashboard": {"shoulder_pan": 0.0}},
+        "session": session,
+    }
+    monkeypatch.setattr(live, "_teach_monitors", {"manual": item})
+    confirmed = {"torque_enabled": False, "teach_mode": True, "mode": "teach"}
+
+    live._start_teach_monitor(
+        "manual",
+        {"action": "release"},
+        {"torque_enabled": False, "mode": "released"},
+        confirmed,
+    )
+
+    assert seeded == [confirmed]
+    assert item["confirmed_config"] == confirmed
+    assert item["ctx"]["action"] == "release"
+    assert item["outputs"]["torque_enabled"] is False
+    assert item["dashboard_baselines"] == {}
+
+
+def test_manual_monitor_discards_stale_joint_subscription(monkeypatch):
+    class StopAfterOneTick:
+        def __init__(self):
+            self.calls = 0
+
+        def wait(self, _timeout):
+            self.calls += 1
+            return self.calls > 1
+
+    session = SimpleNamespace(
+        snapshot=lambda: ({"shoulder_pan": 0.0}, {"torque_enabled": False}, 9.0),
+    )
+    released = []
+    monkeypatch.setattr(
+        rb,
+        "release_joint_stream",
+        lambda value, **kwargs: released.append((value, kwargs)),
+    )
+    item = {
+        "ctx": {"transport": "rosbridge"},
+        "session": session,
+        "stop": StopAfterOneTick(),
+        "outputs": {},
+    }
+
+    live._teach_monitor_worker("manual", item)
+
+    assert released == [(session, {"discard": True})]
+    assert item["session"] is None
+    assert "subscription stale" in item["error"]
+
+
+def test_manual_move_run_once_returns_snapshot_without_monitor(monkeypatch):
+    started = []
+    monkeypatch.setattr(nr, "available", lambda: (True, ""))
+    monkeypatch.setattr(nr, "read_config", lambda *a, **k: {"torque_enabled": False, "last_error": ""})
+    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {"shoulder_pan": math.radians(7.0)})
+    monkeypatch.setattr(live, "_start_teach_monitor", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(live, "_stop_teach_monitor", lambda *a, **k: None)
+
+    result = _NODE_REGISTRY["ROS2ManualMove"]({
+        "action": "check",
+        "transport": "native",
+        "units": "degrees",
+        "__run_mode__": "once",
+    })
+
+    assert result["live"] is False
+    assert result["updated_at"].startswith("snapshot ")
+    assert math.isclose(result["pose"]["shoulder_pan"], 7.0)
+    assert "one-time pose snapshot" in result["report"]
+    assert started == []
 
 
 def test_native_set_joint_previews_live_pose_when_disarmed(monkeypatch):
@@ -979,7 +1259,11 @@ def test_continuous_follow_step_resets_stale_joint_stream(monkeypatch):
         "updated_at": time.time(),
         "detection": {"found": True, "center": {"x": 100}, "frame_width": 640},
     }, ""))
-    monkeypatch.setattr(rb, "release_joint_stream", released.append)
+    monkeypatch.setattr(
+        rb,
+        "release_joint_stream",
+        lambda session, **kwargs: released.append((session, kwargs)),
+    )
     signature = ("127.0.0.1", 9090, "/joint_states", "/joint_commands", "")
     item = {"session": session, "session_signature": signature, "session_resets": 0}
     ctx = {
@@ -996,7 +1280,7 @@ def test_continuous_follow_step_resets_stale_joint_stream(monkeypatch):
 
     assert result["running"] is False
     assert "resetting subscription" in result["report"]
-    assert released == [session]
+    assert released == [(session, {"discard": True})]
     assert item["session"] is None
     assert item["session_signature"] is None
     assert item["session_resets"] == 1
@@ -1045,6 +1329,78 @@ def test_motion_dashboard_renders_before_after():
     assert result["dashboard"].startswith("data:image/svg+xml;base64,")
     assert result["summary"]["delta"] == 35.0
     assert result["summary"]["moved"] is True
+
+
+def test_motion_dashboard_shows_live_pose_when_motion_data_is_empty():
+    pose = {"shoulder_pan": 12.5, "gripper": 25.0}
+    result = _NODE_REGISTRY["ROS2MotionDashboard"]({
+        "joint": "",
+        "pose": pose,
+        "before": {},
+        "after": {},
+        "target": {},
+        "moved": False,
+        "units": "degrees",
+    })
+    assert result["dashboard"].startswith("data:image/svg+xml;base64,")
+    assert result["summary"]["moved"] is False
+    assert result["summary"]["joints"] == ["gripper", "shoulder_pan"]
+    assert result["summary"]["positions"] == pose
+    assert result["summary"]["before_values"] == pose
+    assert result["summary"]["after_values"] == pose
+
+
+def test_motion_dashboard_renders_live_pose_state():
+    pose = {"shoulder_pan": 12.5, "gripper": 25.0}
+    result = _NODE_REGISTRY["ROS2MotionDashboard"]({
+        "pose": pose,
+        "before": {"shoulder_pan": 10.0, "gripper": 20.0},
+        "units": "degrees",
+        "__live_pose__": True,
+    })
+
+    assert result["live"] is True
+    assert result["summary"]["live"] is True
+    assert result["summary"]["positions"] == pose
+    assert result["summary"]["before_values"] == {"shoulder_pan": 10.0, "gripper": 20.0}
+
+
+def test_live_motion_dashboard_keeps_first_pose_as_baseline():
+    graph = type("GraphStub", (), {})()
+    graph._edges = [{"from": "manual", "from_port": "pose", "to": "dashboard", "to_port": "pose"}]
+    graph._nodes = {"dashboard": {"type": "ROS2MotionDashboard", "params": {}}}
+    ctx = {"__graph__": graph, "__node_id__": "manual"}
+    item = {}
+
+    live._live_motion_dashboard_outputs(ctx, {"shoulder_pan": 10.0}, "degrees", False, item)
+    outputs = live._live_motion_dashboard_outputs(ctx, {"shoulder_pan": 15.0}, "degrees", False, item)
+
+    summary = outputs["dashboard"]["summary"]
+    assert summary["live"] is True
+    assert summary["mode"] == "released"
+    assert summary["torque_enabled"] is False
+    assert summary["joint"] == "shoulder_pan"
+    assert summary["delta"] == 5.0
+    assert summary["before_values"] == {"shoulder_pan": 10.0}
+    assert summary["positions"] == {"shoulder_pan": 15.0}
+    svg = base64.b64decode(outputs["dashboard"]["dashboard"].split(",", 1)[1]).decode("utf-8")
+    assert "MOST CHANGED JOINT" in svg
+    assert "CHANGE SINCE LIVE START" in svg
+    assert "TARGET" not in svg
+
+
+def test_ros2_live_stop_reports_numeric_follow_count(monkeypatch):
+    monkeypatch.setattr(live, "stop_continuous_follow_services", lambda: {
+        "ok": True, "stopped": 2, "report": "stopped 2",
+    })
+    monkeypatch.setattr(live, "_teach_monitors", {})
+    monkeypatch.setattr(rb, "close_joint_streams", lambda: 1)
+
+    result = live.stop_runtime_services()
+
+    assert result["stopped"]["managed_runs"] == 2
+    assert result["stopped"]["joint_streams"] == 1
+    assert "2 follow controller(s)" in result["report"]
 
 
 # --- integration (needs native ros2 or Docker) ------------------------------------

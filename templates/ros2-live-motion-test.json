@@ -1,7 +1,7 @@
 {
   "kind": "blacknode.workflow",
   "schema_version": 1,
-  "name": "ROS 2 Live Motion Test",
+  "name": "ROS 2 Motion Test — Relative Move",
   "saved_at": "2026-06-19T00:00:00",
   "entrypoint": {
     "node_id": "out",
@@ -9,14 +9,14 @@
   },
   "metadata": {
     "template": true,
-    "description": "Prove Blacknode moves a real robot with the universal ROS 2 rosbridge nodes. Start your robot's rosbridge command bridge (serving ws://127.0.0.1:9090), Run to preflight and read the live pose, then set Rotate Joint armed=true to move the chosen joint and watch the before/after dashboard. Safe by default: armed is off. Repoint host/port/topics/joint for your robot.",
+    "description": "Read and move a real robot through one generic ROS 2 graph. Blacknode selects native rclpy when available or prepares rosbridge automatically, then previews a relative joint move before arming.",
     "color": "#2e9fe6",
     "required_packages": ["blacknode-ros2"]
   },
   "node_meta": {
     "status": {
       "id": "status",
-      "type": "ROS2RosbridgeStatus",
+      "type": "ROS2Status",
       "params": {
         "host": "127.0.0.1",
         "port": 9090,
@@ -170,10 +170,11 @@
         "units": "degrees"
       },
       "pos": [1280, 200],
-      "inputs": ["joint", "before", "after", "target", "moved", "units"],
+      "inputs": ["joint", "pose", "before", "after", "target", "moved", "units"],
       "outputs": ["dashboard", "summary"],
       "input_types": {
         "joint": "Text",
+        "pose": "Dict",
         "before": "Dict",
         "after": "Dict",
         "target": "Dict",
@@ -218,6 +219,12 @@
       "from_port": "report",
       "to": "rotate",
       "to_port": "trigger"
+    },
+    {
+      "from": "live",
+      "from_port": "pose",
+      "to": "dashboard",
+      "to_port": "pose"
     },
     {
       "from": "rotate",
