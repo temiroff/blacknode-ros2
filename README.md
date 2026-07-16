@@ -259,6 +259,10 @@ Keep a physical power cutoff within reach and clear the workspace before arming.
 
 ## Development
 
+Coding agents should read [`AGENTS.md`](AGENTS.md) before changing this package.
+It defines transport ownership, managed-service behavior, robot-motion safety,
+and verification commands.
+
 After loading, modules are importable through Blacknode's stable alias:
 
 ```python
