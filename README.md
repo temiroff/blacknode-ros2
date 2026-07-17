@@ -2,8 +2,8 @@
 
 **ROS 2 nodes for [Blacknode](https://github.com/temiroff/Blacknode).**
 
-This is a Blacknode **extension package** — it does not run on its own. It
-plugs ROS 2 into the Blacknode visual workflow editor: list topics and
+Install this Blacknode **extension package** to add ROS 2 to the visual
+workflow editor: list topics and
 services, echo and publish messages, inspect interface definitions, and drive
 it all from workflows or AI agents over MCP.
 
