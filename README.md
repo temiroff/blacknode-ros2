@@ -62,7 +62,7 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2PackageExecutables` | List executable commands registered by a ROS 2 package |
 | `ROS2Command` | Escape hatch: run any `ros2 ...` subcommand and capture the output |
 | `ROS2Status` | Auto-select native `rclpy` or rosbridge, ensuring the local rosbridge service when needed |
-| `ROS2RobotDiscovery` | Detect a robot over the selected transport and output one standard robot profile |
+| `ROS2RobotDiscovery` | Advanced compatibility node for detecting an already-running external ROS robot interface |
 | `ROS2JointState` | Read any robot's current pose over the selected transport |
 | `ROS2SetJoint` | Set one absolute joint target; previews live before/target values while disarmed |
 | `ROS2RotateJoint` | Move one joint by a relative delta over the selected transport |
@@ -188,7 +188,8 @@ The selected path is reported in every node result:
 Blacknode -> rclpy -> /joint_states + /joint_commands -> robot driver
 ```
 
-Use `ROS2Status` first, then `ROS2RobotDiscovery` or `ROS2JointState`. Use
+Use `Robot` for normal setup, then `ROS2Status` and `ROS2JointState`. Use
+`ROS2RobotDiscovery` only for an already-running external ROS robot. Use
 `ROS2SetJoint` for an absolute actuator target and
 `ROS2FollowDetectionJoint` for cube-following from a CV2 detection.
 

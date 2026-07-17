@@ -1375,6 +1375,11 @@ def test_leader_follower_previews_disarmed_and_commands_bounded_targets(monkeypa
     assert follower_session.published and commanded["commanded"] is True
     assert commanded["target"]["shoulder_pan"] == pytest.approx(2.0)
     assert commanded["target"]["elbow_flex"] == pytest.approx(-2.0)
+    assert item["sample"]["kind"] == "blacknode.teleoperation-sample"
+    assert item["sample"]["joint_names"] == ["shoulder_pan", "elbow_flex"]
+    assert item["sample"]["units"] == "radians"
+    assert item["sample"]["observation"]["shoulder_pan"] == pytest.approx(0.0)
+    assert item["sample"]["action"]["shoulder_pan"] == pytest.approx(math.radians(2.0))
     assert len(acquired) == 2
 
     direct = live._leader_follower_step(item, {
