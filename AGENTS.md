@@ -39,3 +39,9 @@ Get-ChildItem packages\blacknode-ros2\templates\*.json | ForEach-Object { blackn
 Tests must skip cleanly when ROS or Docker is unavailable. Never claim physical
 motion was tested without hardware evidence. See `docs/packages.md` and the
 `blacknode-development` skill for shared package rules.
+
+## Documentation voice
+
+Describe Blacknode ROS nodes, transports, streams, controllers, and lifecycle
+directly. Mention external names only for implemented protocols and runtime
+requirements; avoid product comparisons.
