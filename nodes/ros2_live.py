@@ -32,6 +32,7 @@ from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text, _NOD
 from . import ros2_native_runtime as nr
 from . import rosbridge_runtime as rb
 from . import rosbridge_service
+from . import sample_stream
 
 _CATEGORY = "ROS 2"
 _continuous_follow_lock = threading.Lock()
@@ -2438,6 +2439,7 @@ def _stop_leader_follower(run_id: str) -> bool:
         item = _leader_follower_runs.pop(run_id, None)
     if item is None:
         return False
+    sample_stream.unregister(run_id)
     item["stop"].set()
     thread = item.get("thread")
     if thread is not None and thread is not threading.current_thread():
@@ -2468,6 +2470,7 @@ def leader_follower_runtime_status() -> list[dict[str, Any]]:
                 "run_id": run_id,
                 "armed": bool(item.get("ctx", {}).get("armed", False)),
                 "loop_hz": float(item.get("ctx", {}).get("loop_hz") or 60.0),
+                "sample_stream": dict(item.get("sample_stream") or {}),
                 "report": str(item.get("last", {}).get("report") or ""),
             }
             for run_id, item in _leader_follower_runs.items()
@@ -2572,6 +2575,36 @@ def _leader_follower_step(item: dict[str, Any], ctx: dict[str, Any]) -> dict[str
     commanded = armed and any(abs(target_rad[name] - follower_pose_rad[name]) > deadband for name in target)
     if commanded:
         follower_session.publish(target_rad)
+    sequence = int(item.get("sample_sequence") or 0) + 1
+    captured_at_ns = time.time_ns()
+    leader_sample = {
+        destination: float(leader_pose_rad[source])
+        for source, destination in mapping.items()
+        if destination in target and source in leader_pose_rad
+    }
+    item["sample_sequence"] = sequence
+    item["sample"] = {
+        "kind": "blacknode.teleoperation-sample",
+        "schema_version": 1,
+        "sequence": sequence,
+        "captured_at_ns": captured_at_ns,
+        "monotonic_ns": time.monotonic_ns(),
+        "leader_source_at_ns": captured_at_ns - int(max(0.0, leader_age) * 1_000_000_000),
+        "observation_source_at_ns": captured_at_ns - int(max(0.0, follower_age) * 1_000_000_000),
+        "joint_names": list(target),
+        "leader": leader_sample,
+        "observation": {name: float(follower_pose_rad[name]) for name in target},
+        "action": {name: float(target_rad[name]) for name in target},
+        "units": "radians",
+        "armed": armed,
+        "live": True,
+        "commanded": commanded,
+        "clamped": list(clamped),
+        "leader_hardware_id": leader_id,
+        "follower_hardware_id": follower_id,
+        "leader_calibration_path": str(leader_driver.get("calibration_path") or ""),
+        "follower_calibration_path": str(follower_driver.get("calibration_path") or ""),
+    }
     report = (
         f"Direct-following {len(target)} joint(s) from the live leader pose." if commanded and tracking_mode == "direct"
         else f"Following {len(target)} joint(s) at bounded targets." if commanded
@@ -2637,6 +2670,7 @@ def _leader_follower_worker(run_id: str, item: dict[str, Any]) -> None:
     outputs={
         "running": Bool, "live": Bool, "armed": Bool, "commanded": Bool,
         "leader_pose": Dict, "follower_pose": Dict, "target": Dict,
+        "sample_stream": Dict,
         "clamped": List, "joint_count": Int, "dashboard": Image,
         "summary": Dict, "report": Text,
     },
@@ -2651,30 +2685,38 @@ def ros2_leader_follower(ctx: dict) -> dict:
         existing = _leader_follower_runs.get(run_id)
         if existing is not None and not existing["thread"].is_alive():
             _leader_follower_runs.pop(run_id, None)
+            sample_stream.unregister(run_id)
             existing = None
     if action == "check":
         if existing is None:
             return _leader_follower_result(report=f"leader-follower '{run_id}' is not running.")
         with _leader_follower_lock:
-            return dict(existing.get("last") or _leader_follower_result(running=True, armed=bool(ctx.get("armed"))))
+            latest = dict(existing.get("last") or _leader_follower_result(running=True, armed=bool(ctx.get("armed"))))
+            latest["sample_stream"] = dict(existing.get("sample_stream") or {})
+            return latest
     if existing is not None:
         with _leader_follower_lock:
             existing["ctx"] = dict(ctx)
             latest = dict(existing.get("last") or _leader_follower_result(running=True, armed=bool(ctx.get("armed"))))
         latest["running"] = True
+        latest["sample_stream"] = dict(existing.get("sample_stream") or {})
         return latest
     item: dict[str, Any] = {
         "ctx": dict(ctx), "stop": threading.Event(), "leader_session": None,
         "follower_session": None, "leader_signature": None, "follower_signature": None,
         "last": _leader_follower_result(running=True, armed=bool(ctx.get("armed")), report="Waiting for both robots…"),
         "updated_at": time.time(),
+        "sample": {}, "sample_sequence": 0,
     }
+    item["sample_stream"] = sample_stream.register(run_id, lambda: dict(item.get("sample") or {}))
     thread = threading.Thread(target=_leader_follower_worker, args=(run_id, item), name=f"blacknode-leader-follower-{run_id}", daemon=True)
     item["thread"] = thread
     with _leader_follower_lock:
         _leader_follower_runs[run_id] = item
     thread.start()
-    return dict(item["last"])
+    result = dict(item["last"])
+    result["sample_stream"] = dict(item["sample_stream"])
+    return result
 
 
 @node(
