@@ -224,6 +224,9 @@ Small corrections accumulate into a desired setpoint so servo friction cannot
 stall tracking, while that setpoint remains bounded near measured feedback.
 Stale joint subscriptions are discarded and reacquired automatically, and
 stale detections or feedback suppress motion rather than using old data.
+Leader-follower control applies the same recovery independently to the leader
+and follower streams. A stale shared subscription is replaced for every
+consumer so a restarted robot driver can resume live callbacks safely.
 
 `roslibpy` is installed by **Install prerequisites** in the Packages tab,
 `blacknode packages setup blacknode-ros2`, or `pip install roslibpy` **into the

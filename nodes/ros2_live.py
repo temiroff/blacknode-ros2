@@ -2517,8 +2517,28 @@ def _leader_follower_step(item: dict[str, Any], ctx: dict[str, Any]) -> dict[str
         follower_session.wait_for_pose(1.0)
         follower_pose_rad, follower_config, follower_age = follower_session.snapshot()
     stale_after = max(0.25, float(ctx.get("stale_after") or 0.75))
-    if not leader_pose_rad or not follower_pose_rad or leader_age > stale_after or follower_age > stale_after:
-        return _leader_follower_result(running=True, armed=armed, report="WAITING: one robot joint stream is missing or stale; commands suppressed.")
+    stream_issues: list[str] = []
+    for role, session, pose, age in (
+        ("leader", leader_session, leader_pose_rad, leader_age),
+        ("follower", follower_session, follower_pose_rad, follower_age),
+    ):
+        if pose and age <= stale_after:
+            continue
+        issue = "missing" if not pose else f"stale ({age:.2f}s > {stale_after:.2f}s)"
+        stream_issues.append(f"{role} {issue}")
+        rb.release_joint_stream(session, discard=True)
+        item[f"{role}_session"] = None
+        item[f"{role}_signature"] = None
+        item[f"{role}_session_resets"] = int(item.get(f"{role}_session_resets") or 0) + 1
+    if stream_issues:
+        return _leader_follower_result(
+            running=True,
+            armed=armed,
+            report=(
+                f"WAITING: {', '.join(stream_issues)} joint stream; resetting subscription; "
+                "commands suppressed."
+            ),
+        )
     if not leader_config:
         leader_config = leader_session.wait_for_config(0.5)
     if not follower_config:
