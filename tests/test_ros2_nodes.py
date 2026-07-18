@@ -695,6 +695,19 @@ def test_joint_stream_release_can_discard_a_stale_subscription(monkeypatch):
     assert closed == [True]
 
 
+def test_joint_stream_discard_replaces_stale_shared_subscription(monkeypatch):
+    key = ("127.0.0.1", 9090, "/joint_states", "/joint_commands", "/joint_config")
+    closed = []
+    session = SimpleNamespace(key=key, _users=2, close=lambda: closed.append(True))
+    monkeypatch.setattr(rb, "_joint_streams", {key: session})
+
+    rb.release_joint_stream(session, discard=True)
+
+    assert session._users == 0
+    assert rb._joint_streams == {}
+    assert closed == [True]
+
+
 def test_existing_manual_monitor_receives_confirmed_release_config(monkeypatch):
     seeded = []
     session = SimpleNamespace(seed_config=lambda config: seeded.append(dict(config)))
@@ -1401,6 +1414,83 @@ def test_leader_follower_blocks_same_usb_device(monkeypatch):
 
     assert result["commanded"] is False
     assert "same USB device" in result["report"]
+
+
+def test_leader_follower_resets_stale_side_and_recovers(monkeypatch):
+    class FakeSession:
+        def __init__(self, pose, config, age):
+            self.pose = pose
+            self.config = config
+            self.age = age
+            self.published = []
+
+        def snapshot(self):
+            return self.pose, self.config, self.age
+
+        def wait_for_pose(self, timeout):
+            return self.pose
+
+        def wait_for_config(self, timeout):
+            return self.config
+
+        def publish(self, pose):
+            self.published.append(pose)
+
+    leader_config = {"torque_enabled": False}
+    follower_config = {
+        "commands_allowed": True,
+        "joints": {"shoulder_pan": {"lower": -1.0, "upper": 1.0}},
+    }
+    stale_leader = FakeSession({"shoulder_pan": 0.4}, leader_config, 99.0)
+    fresh_leader = FakeSession({"shoulder_pan": 0.4}, leader_config, 0.01)
+    follower = FakeSession({"shoulder_pan": 0.0}, follower_config, 0.01)
+    leader_sessions = [stale_leader, fresh_leader]
+    released = []
+
+    def acquire(*signature, **kwargs):
+        return leader_sessions.pop(0) if signature[2].startswith("/leader/") else follower
+
+    def release(session, *, discard=False):
+        if session is not None:
+            released.append((session, discard))
+
+    monkeypatch.setattr(live, "_resolve_transport", lambda ctx: "rosbridge")
+    monkeypatch.setattr(rb, "acquire_joint_stream", acquire)
+    monkeypatch.setattr(rb, "release_joint_stream", release)
+    item = {
+        "leader_session": None, "follower_session": None,
+        "leader_signature": None, "follower_signature": None,
+    }
+    ctx = {
+        "armed": True,
+        "tracking_mode": "direct",
+        "stale_after": 0.75,
+        "require_calibration": True,
+        "require_leader_released": True,
+        "leader_robot": {
+            "state_topic": "/leader/joint_states", "command_topic": "/leader/joint_commands",
+            "config_topic": "/leader/joint_config",
+            "driver": {"hardware_id": "LEADER", "calibration_path": "leader.json"},
+        },
+        "follower_robot": {
+            "state_topic": "/follower/joint_states", "command_topic": "/follower/joint_commands",
+            "config_topic": "/follower/joint_config",
+            "driver": {"hardware_id": "FOLLOWER", "calibration_path": "follower.json"},
+        },
+    }
+
+    waiting = live._leader_follower_step(item, ctx)
+    recovered = live._leader_follower_step(item, ctx)
+
+    assert waiting["commanded"] is False
+    assert "leader stale (99.00s > 0.75s)" in waiting["report"]
+    assert "resetting subscription" in waiting["report"]
+    assert item["leader_session_resets"] == 1
+    assert (stale_leader, True) in released
+    assert recovered["live"] is True
+    assert recovered["commanded"] is True
+    assert "Direct-following" in recovered["report"]
+    assert follower.published
 
 
 def test_leader_follower_live_service_updates_and_stops(monkeypatch):

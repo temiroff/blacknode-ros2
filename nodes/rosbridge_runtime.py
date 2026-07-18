@@ -181,8 +181,13 @@ def release_joint_stream(session: JointStreamSession | None, *, discard: bool = 
         return
     with _joint_stream_lock:
         session._users = max(0, session._users - 1)
-        if session._users == 0 and discard:
-            _joint_streams.pop(session.key, None)
+        if discard:
+            # A stale shared subscription is stale for every consumer. Remove
+            # and close it immediately so the first recovering controller gets
+            # a fresh Topic instead of reacquiring the same dead callback.
+            if _joint_streams.get(session.key) is session:
+                _joint_streams.pop(session.key, None)
+            session._users = 0
             session.close()
 
 
