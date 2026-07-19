@@ -19,6 +19,11 @@ algorithms in `blacknode-vision`.
   but must not publish a command.
 - The first armed command must synchronize to current pose. Clamp targets to
   reported limits and suppress motion on stale detection or joint feedback.
+- Policy runtimes stay disarmed through start and preview. Emergency stop,
+  takeover, stale input, inference faults, normal stop, and server shutdown
+  must suppress commands and request torque release through the robot driver.
+- Keep model-format loading behind the policy artifact adapter. ROS transport
+  owns subscriptions and commands; training packages own model architectures.
 - Keep reconnect/retry control actions idempotent. Do not restart a healthy
   physical driver merely because a transport reconnects.
 - Treat subscriptions, streams, controllers, and launched processes as managed
