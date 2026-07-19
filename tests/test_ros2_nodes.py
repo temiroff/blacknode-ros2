@@ -510,6 +510,7 @@ def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):
         "detached": 1,
         "continuous_follows": 0,
         "leader_followers": 0,
+        "policy_runs": 0,
     }
     assert rt._streams == {}
     assert rt._managed_detached == {}

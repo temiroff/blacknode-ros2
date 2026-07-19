@@ -70,9 +70,32 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2ContinuousFollowDetectionJoint` | Cook once to start a persistent visual-servo service with one long-lived joint-state subscription and command publisher |
 | `ROS2LeaderFollower` | Stream a released leader pose into a separately calibrated follower with direct or bounded tracking, mapping, limits, and stale-data suppression |
 | `ROS2MotionDashboard` | Render before/after joint values so the graph visibly shows the robot moved |
+| `PolicySafetyGate` | Build calibrated joint, velocity, freshness, optional workspace, and replay-log safety settings |
+| `PolicyRuntime` | Preview continuously, arm explicitly, execute policy actions, disarm, emergency-stop, or hand control back to a person |
 
 Action nodes carry an optional `trigger` input so you can sequence them in a
 graph (start the publisher → then echo).
+
+## Policy deployment
+
+`PolicyRuntime` consumes a `blacknode.policy-artifact`, the follower `Robot`,
+and the same named `blacknode.frame-stream` cameras used to record training
+episodes. Starting the runtime only begins a disarmed prediction preview.
+Choose `action=arm` in a separate cook after checking live predictions and the
+workspace. The first armed command synchronizes to the current joint pose.
+
+Every later action passes through calibrated joint limits, maximum joint
+velocity, maximum per-cycle step, and source-freshness checks. Optional
+workspace bounds require a live `geometry_msgs/PoseStamped` topic; missing or
+out-of-bounds workspace telemetry suppresses commands. `disarm`, `estop`,
+`takeover`, inference faults, stale sources, normal stop, and server shutdown
+request torque release through the robot driver. Support the arm before any
+torque-release action because gravity may move it.
+
+Runtime metrics and inference/command decisions are appended to
+`.blacknode/policy-runs/<run_id>.jsonl` by default for replay and failure
+review. Camera pixels are not copied into this log; dataset recording remains
+the source of synchronized correction episodes.
 
 ## Templates
 
