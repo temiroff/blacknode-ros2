@@ -1,13 +1,33 @@
 [package]
 name = "blacknode-ros2"
-version = "0.2.0"
-description = "ROS 2 topics, streams, robot control, and safety-gated policy deployment."
-requires-blacknode = ">=0.1.0"
+version = "0.3.0"
+description = "ROS 2 graph, topic, service, process, native, and rosbridge integration primitives."
+requires-blacknode = ">=0.3.0"
+layer = "ros2"
+component-mode = true
 
 [categories]
 "ROS 2" = "#2e9fe6"
 
-[dependencies]
+[components.core]
+description = "ROS graph discovery, native and rosbridge transports, topics, services, processes, diagnostics, and compatibility nodes."
+default = true
+capabilities = ["integration.ros2", "transport.ros2", "transport.rosbridge"]
+nodes = ["nodes"]
+module-root = true
+node-types = [
+  "ROS2BridgeEcho", "ROS2BridgePublish", "ROS2Command", "ROS2CompressedImageSnapshot",
+  "ROS2ContinuousFollowDetectionJoint", "ROS2DemoPublisher", "ROS2FollowDetectionJoint",
+  "ROS2ImageSnapshot", "ROS2ImageStream", "ROS2InterfaceShow", "ROS2JointState", "ROS2Launch",
+  "ROS2LeaderFollower", "ROS2ManualMove", "ROS2MotionDashboard", "ROS2NativeFollowDetectionJoint",
+  "ROS2NativeJointState", "ROS2NativeRobotDiscovery", "ROS2NativeSetJoint", "ROS2NativeStatus",
+  "ROS2NodeList", "ROS2PackageExecutables", "ROS2RobotDiscovery", "ROS2RosbridgeServer",
+  "ROS2RosbridgeStatus", "ROS2RotateJoint", "ROS2Run", "ROS2ServiceList", "ROS2SetJoint",
+  "ROS2Status", "ROS2SystemCheck", "ROS2TeachMode", "ROS2TopicEcho", "ROS2TopicList",
+  "ROS2TopicPublish", "ROS2VisualDashboard",
+]
+
+[components.core.dependencies]
 pip = ["PyYAML>=6", "roslibpy>=1.5", "numpy>=1.24", "pillow>=10"]
 imports = ["yaml", "roslibpy", "numpy", "PIL"]
 docker = ["ros:jazzy"]

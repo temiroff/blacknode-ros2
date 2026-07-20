@@ -60,11 +60,6 @@ EXPECTED_NODES = [
     "ROS2NativeSetJoint",
     "ROS2NativeFollowDetectionJoint",
     "ROS2MotionDashboard",
-    "BaseSafetyGate",
-    "ROS2BaseMove",
-    "ROS2BaseStop",
-    "ROS2LaserScanCheck",
-    "ROS2OdomState",
     "ROS2BridgePublish",
     "ROS2BridgeEcho",
 ]
