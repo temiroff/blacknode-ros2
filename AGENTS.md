@@ -7,8 +7,9 @@ state separately from the Blacknode core checkout that may contain it.
 
 Keep ROS 2 discovery, native `rclpy`, rosbridge, topic/service/process nodes,
 ROS camera transport, joint-state transport, and ROS control nodes here. Keep
-USB robot discovery and physical drivers in `blacknode-robot`; keep perception
-algorithms in `blacknode-vision`.
+robot contracts and profiles in `blacknode-robot`, physical hardware drivers
+in `blacknode-drivers`, generic controllers in `blacknode-controllers`, and
+perception algorithms in `blacknode-perception`.
 
 ## Development rules
 
@@ -29,6 +30,8 @@ algorithms in `blacknode-vision`.
 - Treat subscriptions, streams, controllers, and launched processes as managed
   services with visible status and explicit stop paths.
 - Declare imports and Docker images in `blacknode-package.toml`.
+- Keep the `core` component dependency-light and preserve its legacy package
+  module root while saved workflows and external imports migrate.
 - Mark templates with all required packages and keep generic node names in new
   graphs; retain compatibility names only for existing workflows.
 

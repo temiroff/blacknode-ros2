@@ -1,5 +1,11 @@
 # blacknode-ros2
 
+The package is organized as the horizontal `ros2` layer. Its default `core`
+component provides graph discovery, native and rosbridge transports, topics,
+services, processes, diagnostics, and the existing ROS-facing node contracts.
+Driver-specific ROS adapters live with their physical driver components and
+declare a versioned dependency on `blacknode-ros2/core`.
+
 **ROS 2 nodes for [Blacknode](https://github.com/temiroff/Blacknode).**
 
 Install this Blacknode **extension package** to add ROS 2 to the visual

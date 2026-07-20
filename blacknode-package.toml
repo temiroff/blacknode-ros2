@@ -3,11 +3,20 @@ name = "blacknode-ros2"
 version = "0.2.0"
 description = "ROS 2 topics, streams, robot control, and safety-gated policy deployment."
 requires-blacknode = ">=0.1.0"
+layer = "ros2"
+component-mode = true
 
 [categories]
 "ROS 2" = "#2e9fe6"
 
-[dependencies]
+[components.core]
+description = "ROS graph discovery, native and rosbridge transports, topics, services, processes, diagnostics, and compatibility nodes."
+default = true
+capabilities = ["integration.ros2", "transport.ros2", "transport.rosbridge"]
+nodes = ["nodes"]
+module-root = true
+
+[components.core.dependencies]
 pip = ["PyYAML>=6", "roslibpy>=1.5", "numpy>=1.24", "pillow>=10"]
 imports = ["yaml", "roslibpy", "numpy", "PIL"]
 docker = ["ros:jazzy"]
