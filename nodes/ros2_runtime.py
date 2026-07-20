@@ -72,13 +72,17 @@ def runtime_status() -> dict[str, Any]:
     _detached[:] = live_detached
     try:
         from .ros2_live import continuous_follow_runtime_status, leader_follower_runtime_status
-        from .policy_runtime import runtime_status as policy_runtime_status
         continuous_follows = continuous_follow_runtime_status()
         leader_followers = leader_follower_runtime_status()
-        policy_runs = policy_runtime_status()
     except Exception:
         continuous_follows = []
         leader_followers = []
+    try:
+        from blacknode.pkg.blacknode_controllers.policy.policy_runtime import (
+            runtime_status as policy_runtime_status,
+        )
+        policy_runs = policy_runtime_status()
+    except Exception:
         policy_runs = []
     return {
         "ok": True,
@@ -99,13 +103,17 @@ def stop_runtime_services() -> dict[str, Any]:
     stream_result = stop_image_stream("")
     try:
         from .ros2_live import stop_continuous_follow_services, stop_leader_follower_services
-        from .policy_runtime import stop_policy_services
         follow_result = stop_continuous_follow_services()
         leader_follower_result = stop_leader_follower_services()
-        policy_result = stop_policy_services()
     except Exception as exc:
         follow_result = {"ok": False, "stopped": 0, "error": str(exc)}
         leader_follower_result = {"ok": False, "stopped": 0, "error": str(exc)}
+    try:
+        from blacknode.pkg.blacknode_controllers.policy.policy_runtime import stop_policy_services
+        policy_result = stop_policy_services()
+    except ModuleNotFoundError:
+        policy_result = {"ok": True, "stopped": 0, "error": ""}
+    except Exception as exc:
         policy_result = {"ok": False, "stopped": 0, "error": str(exc)}
 
     managed_stopped = 0
