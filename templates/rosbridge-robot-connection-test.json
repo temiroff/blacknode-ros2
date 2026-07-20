@@ -1,0 +1,133 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Rosbridge Robot Connection Test",
+  "saved_at": "2026-07-19T00:00:00",
+  "entrypoint": {
+    "node_id": "ping",
+    "port": "report"
+  },
+  "metadata": {
+    "template": true,
+    "description": "First contact with any robot whose bringup runs rosbridge_server: check the WebSocket, read one live topic, and publish a test message. Replace ROBOT_IP on every node with your robot's IP address. Set the echo topic to any topic your robot publishes (battery, joint states, IMU); point the publish node at a buzzer or LED topic for a physical acknowledgment. Robots running web_video_server also serve camera streams at http://ROBOT_IP:8080.",
+    "color": "#2e9fe6",
+    "required_packages": ["blacknode-ros2"]
+  },
+  "node_meta": {
+    "bridge": {
+      "id": "bridge",
+      "type": "ROS2RosbridgeStatus",
+      "params": {
+        "host": "ROBOT_IP",
+        "port": 9090,
+        "timeout": 10.0
+      },
+      "pos": [40, 120],
+      "inputs": ["host", "port", "config_topic", "timeout"],
+      "outputs": ["connected", "ready", "config", "report"],
+      "input_types": {
+        "host": "Text",
+        "port": "Int",
+        "config_topic": "Text",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "connected": "Bool",
+        "ready": "Bool",
+        "config": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "host": "ROBOT_IP",
+        "port": 9090,
+        "timeout": 10.0
+      }
+    },
+    "echo": {
+      "id": "echo",
+      "type": "ROS2BridgeEcho",
+      "params": {
+        "host": "ROBOT_IP",
+        "port": 9090,
+        "topic": "/joint_states",
+        "msg_type": "sensor_msgs/msg/JointState",
+        "timeout": 5.0
+      },
+      "pos": [420, 120],
+      "inputs": ["trigger", "host", "port", "topic", "msg_type", "timeout"],
+      "outputs": ["message", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "host": "Text",
+        "port": "Int",
+        "topic": "Text",
+        "msg_type": "Text",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "message": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "host": "ROBOT_IP",
+        "port": 9090,
+        "topic": "/joint_states",
+        "msg_type": "sensor_msgs/msg/JointState",
+        "timeout": 5.0
+      }
+    },
+    "ping": {
+      "id": "ping",
+      "type": "ROS2BridgePublish",
+      "params": {
+        "host": "ROBOT_IP",
+        "port": 9090,
+        "topic": "/blacknode/ping",
+        "msg_type": "std_msgs/msg/String",
+        "payload": "{\"data\": \"hello from Blacknode\"}",
+        "repeat": 1,
+        "timeout": 5.0
+      },
+      "pos": [800, 120],
+      "inputs": ["trigger", "host", "port", "topic", "msg_type", "payload", "repeat", "timeout"],
+      "outputs": ["published", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "host": "Text",
+        "port": "Int",
+        "topic": "Text",
+        "msg_type": "Text",
+        "payload": "Text",
+        "repeat": "Int",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "published": "Bool",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "host": "ROBOT_IP",
+        "port": 9090,
+        "topic": "/blacknode/ping",
+        "msg_type": "std_msgs/msg/String",
+        "payload": "{\"data\": \"hello from Blacknode\"}",
+        "repeat": 1,
+        "timeout": 5.0
+      }
+    }
+  },
+  "edges": [
+    {
+      "from": "bridge",
+      "from_port": "report",
+      "to": "echo",
+      "to_port": "trigger"
+    },
+    {
+      "from": "echo",
+      "from_port": "report",
+      "to": "ping",
+      "to_port": "trigger"
+    }
+  ]
+}
