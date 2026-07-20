@@ -71,7 +71,8 @@ def runtime_status() -> dict[str, Any]:
     live_detached = [proc for proc in _detached if proc.poll() is None]
     _detached[:] = live_detached
     try:
-        from .ros2_live import continuous_follow_runtime_status, leader_follower_runtime_status
+        from blacknode.pkg.blacknode_skills.follow_person.follow_runtime import continuous_follow_runtime_status
+        from blacknode.pkg.blacknode_skills.follow_person.leader_follower_runtime import leader_follower_runtime_status
         continuous_follows = continuous_follow_runtime_status()
         leader_followers = leader_follower_runtime_status()
     except Exception:
@@ -102,9 +103,13 @@ def stop_runtime_services() -> dict[str, Any]:
     status_before = runtime_status()
     stream_result = stop_image_stream("")
     try:
-        from .ros2_live import stop_continuous_follow_services, stop_leader_follower_services
+        from blacknode.pkg.blacknode_skills.follow_person.follow_runtime import stop_continuous_follow_services
+        from blacknode.pkg.blacknode_skills.follow_person.leader_follower_runtime import stop_leader_follower_services
         follow_result = stop_continuous_follow_services()
         leader_follower_result = stop_leader_follower_services()
+    except ModuleNotFoundError:
+        follow_result = {"ok": True, "stopped": 0, "error": ""}
+        leader_follower_result = {"ok": True, "stopped": 0, "error": ""}
     except Exception as exc:
         follow_result = {"ok": False, "stopped": 0, "error": str(exc)}
         leader_follower_result = {"ok": False, "stopped": 0, "error": str(exc)}
