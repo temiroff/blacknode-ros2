@@ -1,7 +1,7 @@
 {
   "kind": "blacknode.workflow",
   "schema_version": 1,
-  "name": "ROS 2 Live Roundtrip Demo",
+  "name": "Live Roundtrip Demo",
   "saved_at": "2026-06-12T00:00:00",
   "entrypoint": {
     "node_id": "dashboard",

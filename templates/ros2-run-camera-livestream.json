@@ -1,7 +1,7 @@
 {
   "kind": "blacknode.workflow",
   "schema_version": 1,
-  "name": "ROS 2 Run Camera Livestream",
+  "name": "Run Camera Livestream",
   "saved_at": "2026-07-10T00:00:00",
   "entrypoint": {
     "node_id": "image_out",
