@@ -17,9 +17,9 @@ nodes = ["nodes"]
 module-root = true
 node-types = [
   "ROS2BridgeEcho", "ROS2BridgePublish", "ROS2Command", "ROS2CompressedImageSnapshot",
-  "ROS2ContinuousFollowDetectionJoint", "ROS2DemoPublisher", "ROS2FollowDetectionJoint",
+  "ROS2DemoPublisher",
   "ROS2ImageSnapshot", "ROS2ImageStream", "ROS2InterfaceShow", "ROS2JointState", "ROS2Launch",
-  "ROS2LeaderFollower", "ROS2ManualMove", "ROS2MotionDashboard", "ROS2NativeFollowDetectionJoint",
+  "ROS2ManualMove", "ROS2MotionDashboard",
   "ROS2NativeJointState", "ROS2NativeRobotDiscovery", "ROS2NativeSetJoint", "ROS2NativeStatus",
   "ROS2NodeList", "ROS2PackageExecutables", "ROS2RobotDiscovery", "ROS2RosbridgeServer",
   "ROS2RosbridgeStatus", "ROS2RotateJoint", "ROS2Run", "ROS2ServiceList", "ROS2SetJoint",
