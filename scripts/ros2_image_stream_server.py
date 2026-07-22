@@ -152,7 +152,9 @@ def _jpeg_bytes(image: PILImage.Image, *, max_width: int, quality: int, topic: s
     if max_width > 0 and img.width > max_width:
         height = max(1, int(img.height * (max_width / float(img.width))))
         img = img.resize((max_width, height), PILImage.Resampling.LANCZOS)
-    _draw_badge(img, "LIVE", topic)
+    # No badge on real frames: a moving picture already shows it is live, and
+    # burning a label into the pixels also corrupts the frame for anything
+    # downstream that treats this stream as camera data.
     return _encode_jpeg(img, quality)
 
 
