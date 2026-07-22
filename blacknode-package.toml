@@ -10,17 +10,11 @@ component-mode = true
 "ROS 2" = "#2e9fe6"
 
 [components.core]
-description = "ROS graph discovery, native and rosbridge transports, topics, services, processes, diagnostics, and compatibility nodes."
+description = "Shared ROS 2 graph access that the transport and concern components build on."
 default = true
 capabilities = ["integration.ros2", "transport.ros2", "transport.rosbridge"]
 nodes = ["nodes"]
 module-root = true
-node-types = [
-  "ROS2BridgeEcho", "ROS2BridgePublish", "ROS2DemoPublisher", "ROS2InterfaceShow",
-  "ROS2Launch", "ROS2NodeList", "ROS2PackageExecutables", "ROS2RosbridgeServer",
-  "ROS2RosbridgeStatus", "ROS2Run", "ROS2ServiceList", "ROS2Status", "ROS2SystemCheck",
-  "ROS2TopicEcho", "ROS2TopicList", "ROS2TopicPublish", "ROS2VisualDashboard",
-]
 
 [components.core.dependencies]
 pip = ["PyYAML>=6", "roslibpy>=1.5", "numpy>=1.24", "pillow>=10"]
