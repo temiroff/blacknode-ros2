@@ -1,12 +1,14 @@
-"""blacknode-ros2 — node contracts.
+"""blacknode-ros2 — integration primitive contracts.
+
+Graph discovery, topics, services, processes, and the native/rosbridge
+transports. Capability nodes built on these (joint control, camera streaming)
+live in their own packages' ROS 2 adapters and are tested there.
 
 The no-backend contract (structured error, never raises) is always exercised.
 Integration tests run only when a real backend (native ros2 or Docker) is
 available, and skip cleanly otherwise.
 """
-import base64
 import json
-import math
 import threading
 import time
 from pathlib import Path
@@ -26,38 +28,23 @@ from blacknode.workflow import validate_workflow
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
 
 EXPECTED_NODES = [
+    "ROS2BridgeEcho",
+    "ROS2BridgePublish",
+    "ROS2DemoPublisher",
+    "ROS2InterfaceShow",
+    "ROS2Launch",
+    "ROS2NodeList",
+    "ROS2PackageExecutables",
+    "ROS2RosbridgeServer",
+    "ROS2RosbridgeStatus",
+    "ROS2Run",
+    "ROS2ServiceList",
+    "ROS2Status",
     "ROS2SystemCheck",
-    "ROS2TopicList",
     "ROS2TopicEcho",
-    "ROS2CompressedImageSnapshot",
-    "ROS2ImageSnapshot",
-    "ROS2ImageStream",
+    "ROS2TopicList",
     "ROS2TopicPublish",
     "ROS2VisualDashboard",
-    "ROS2DemoPublisher",
-    "ROS2Launch",
-    "ROS2Run",
-    "ROS2NodeList",
-    "ROS2ServiceList",
-    "ROS2InterfaceShow",
-    "ROS2PackageExecutables",
-    "ROS2Command",
-    "ROS2RosbridgeStatus",
-    "ROS2RosbridgeServer",
-    "ROS2Status",
-    "ROS2RobotDiscovery",
-    "ROS2JointState",
-    "ROS2ManualMove",
-    "ROS2TeachMode",
-    "ROS2RotateJoint",
-    "ROS2SetJoint",
-    "ROS2NativeStatus",
-    "ROS2NativeRobotDiscovery",
-    "ROS2NativeJointState",
-    "ROS2NativeSetJoint",
-    "ROS2MotionDashboard",
-    "ROS2BridgePublish",
-    "ROS2BridgeEcho",
 ]
 
 HAS_BACKEND = rt.detect_backend()["backend"] != "none"
@@ -71,6 +58,20 @@ def test_all_nodes_registered_with_category():
         assert name in _NODE_REGISTRY, name
         assert _NODE_REGISTRY[name]._bn_category == "ROS 2"
         assert _NODE_REGISTRY[name]._bn_package == "blacknode-ros2"
+
+
+def test_capability_nodes_are_not_owned_by_the_integration_layer():
+    """Camera and joint-control nodes belong to their capability packages.
+
+    They may be registered (those packages are installed too), but never by
+    this one -- that is what keeps the ROS 2 layer free of domain verticals.
+    """
+    for name in [
+        "ROS2ImageStream", "ROS2USBCamera", "ROS2WebVideoStream",
+        "ROS2JointState", "ROS2SetJoint", "ROS2ManualMove", "ROS2MotionDashboard",
+    ]:
+        owner = getattr(_NODE_REGISTRY.get(name), "_bn_package", "")
+        assert owner != "blacknode-ros2", f"{name} is still owned by blacknode-ros2"
 
 
 def test_rosbridge_server_reuses_open_local_port(monkeypatch):
@@ -121,43 +122,6 @@ def test_generic_status_falls_back_to_rosbridge_and_ensures_service(monkeypatch)
     assert "bridge ready" in result["report"]
 
 
-def test_transport_specific_nodes_are_hidden_compatibility_aliases():
-    for name in [
-        "ROS2NativeStatus",
-        "ROS2NativeRobotDiscovery",
-        "ROS2NativeJointState",
-        "ROS2NativeSetJoint",
-        "ROS2RosbridgeStatus",
-        "ROS2RosbridgeServer",
-    ]:
-        assert _NODE_REGISTRY[name]._bn_hidden is True
-
-
-def test_generic_set_joint_auto_rosbridge_preview_never_writes(monkeypatch):
-    monkeypatch.setattr(nr, "available", lambda: (False, "missing rclpy"))
-    monkeypatch.setattr(rb, "available", lambda: (True, ""))
-    monkeypatch.setattr(rb, "read_config", lambda *args, **kwargs: {
-        "commands_allowed": True,
-        "limits": {"shoulder_pan": {"lower": -1.0, "upper": 1.0}},
-    })
-    monkeypatch.setattr(rb, "read_pose", lambda *args, **kwargs: {"shoulder_pan": 0.25})
-    monkeypatch.setattr(rb, "stream_motion", lambda *args, **kwargs: pytest.fail("disarmed preview must not write"))
-
-    result = _NODE_REGISTRY["ROS2SetJoint"]({
-        "transport": "auto",
-        "joint": "shoulder_pan",
-        "position": 30.0,
-        "units": "degrees",
-        "armed": False,
-        "config_topic": "/joint_config",
-    })
-
-    assert result["moved"] is False
-    assert result["before"]["shoulder_pan"] == pytest.approx(math.degrees(0.25))
-    assert result["target"]["shoulder_pan"] == pytest.approx(30.0)
-    assert "PREVIEW (not armed)" in result["report"]
-
-
 def test_templates_validate():
     for path in sorted(TEMPLATE_DIR.glob("*.json")):
         report = validate_workflow(json.loads(path.read_text(encoding="utf-8")))
@@ -193,21 +157,12 @@ def test_no_backend_is_structured_error(monkeypatch):
     r = _NODE_REGISTRY["ROS2DemoPublisher"]({"action": "start"})
     assert "FAILED" in r["report"]
 
-    r = _NODE_REGISTRY["ROS2ImageSnapshot"]({"topic": "/camera/image_raw", "timeout": 1.0})
-    assert r["image"] == ""
-    assert "FAILED" in r["report"]
-
     r = _NODE_REGISTRY["ROS2Launch"]({"package": "demo_nodes_cpp", "launch_file": "talker.launch.py"})
     assert r["launched"] is False
     assert "FAILED" in r["report"]
 
     r = _NODE_REGISTRY["ROS2Run"]({"package": "demo_nodes_cpp", "executable": "talker"})
     assert r["running"] is False
-    assert "FAILED" in r["report"]
-
-    r = _NODE_REGISTRY["ROS2ImageStream"]({"topic": "/camera/image_raw", "message_type": "raw"})
-    assert r["preview"] == ""
-    assert r["streaming"] is False
     assert "FAILED" in r["report"]
 
 
@@ -218,9 +173,33 @@ def test_system_check_reports_unavailable(monkeypatch):
     assert r["backend"] == "none"
 
 
-def test_command_rejects_empty_args():
-    r = _NODE_REGISTRY["ROS2Command"]({"args": "  "})
-    assert "FAILED" in r["report"]
+def test_detect_backend_launches_docker_desktop_when_daemon_is_down(monkeypatch):
+    rt._cached_backend = None
+    monkeypatch.setattr(rt.shutil, "which", lambda name: None if name == "ros2" else "/usr/bin/docker")
+    ready_calls = iter([False, False, True])
+    monkeypatch.setattr(rt, "_docker_ok", lambda: next(ready_calls, True))
+    monkeypatch.setattr(rt, "_docker_desktop_executable", lambda: Path("Docker Desktop.exe"))
+    launched = []
+    monkeypatch.setattr(rt.subprocess, "Popen", lambda *a, **k: launched.append(a))
+    monkeypatch.setattr(rt.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(rt.sys, "platform", "win32")
+
+    result = rt.detect_backend(refresh=True)
+
+    assert launched, "Docker Desktop should have been launched"
+    assert result["backend"] == "docker"
+
+
+def test_detect_backend_reports_docker_launch_failure(monkeypatch):
+    rt._cached_backend = None
+    monkeypatch.setattr(rt.shutil, "which", lambda name: None if name == "ros2" else "/usr/bin/docker")
+    monkeypatch.setattr(rt, "_docker_ok", lambda: False)
+    monkeypatch.setattr(rt, "_docker_desktop_executable", lambda: None)
+
+    result = rt.detect_backend(refresh=True)
+
+    assert result["backend"] == "none"
+    assert "Docker" in result["detail"]
 
 
 def test_echo_keeps_partial_messages_on_timeout(monkeypatch):
@@ -232,59 +211,6 @@ def test_echo_keeps_partial_messages_on_timeout(monkeypatch):
     r = _NODE_REGISTRY["ROS2TopicEcho"]({"topic": "/chatter", "count": 5})
     assert len(r["messages"]) == 2
     assert "received 2" in r["report"]
-
-
-def test_compressed_image_snapshot_uses_snapshot_helper(monkeypatch):
-    fake = {
-        "ok": True,
-        "backend": "native",
-        "image": "data:image/jpeg;base64,/9j/2Q==",
-        "metadata": {"width": 2, "height": 1, "format": "jpeg", "encoded_byte_count": 4},
-    }
-    captured = {}
-
-    def fake_capture(**kwargs):
-        captured.update(kwargs)
-        return fake
-
-    monkeypatch.setattr(rt, "capture_image_snapshot", fake_capture)
-    result = _NODE_REGISTRY["ROS2CompressedImageSnapshot"]({
-        "topic": "/camera/compressed",
-        "timeout": 2.0,
-    })
-    assert result["image"].startswith("data:image/jpeg;base64,")
-    assert result["metadata"]["width"] == 2
-    assert captured["message_type"] == "compressed"
-    assert captured["topic"] == "/camera/compressed"
-    assert "captured compressed image frame" in result["report"]
-
-
-def test_raw_image_snapshot_uses_snapshot_helper(monkeypatch):
-    fake = {
-        "ok": True,
-        "backend": "native",
-        "image": "data:image/png;base64,iVBORw0KGgo=",
-        "metadata": {"width": 2, "height": 1, "encoding": "bgr8", "encoded_byte_count": 8},
-    }
-    captured = {}
-
-    def fake_capture(**kwargs):
-        captured.update(kwargs)
-        return fake
-
-    monkeypatch.setattr(rt, "capture_image_snapshot", fake_capture)
-    result = _NODE_REGISTRY["ROS2ImageSnapshot"]({
-        "topic": "/camera/image_raw",
-        "timeout": 2.0,
-        "output_format": "png",
-    })
-    assert result["image"].startswith("data:image/png;base64,")
-    assert result["metadata"]["width"] == 2
-    assert result["metadata"]["height"] == 1
-    assert result["metadata"]["encoding"] == "bgr8"
-    assert captured["message_type"] == "raw"
-    assert captured["output_format"] == "png"
-    assert "captured 2x1 bgr8 frame" in result["report"]
 
 
 def test_launch_builds_ros2_launch_command(monkeypatch):
@@ -358,6 +284,75 @@ def test_run_waits_for_expected_topic(monkeypatch):
     assert "/camera/image_raw is discoverable" in result["report"]
 
 
+def test_run_ros2_managed_docker_reports_missing_package_when_install_fails(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "x"})
+    monkeypatch.setattr(rt, "ensure_container", lambda: None)
+    monkeypatch.setattr(rt, "stop_ros2_managed", lambda key, pattern="": {"ok": True, "stopped": 0})
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        if "pkg prefix" in cmd[-1]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="Package 'image_tools' not found")
+        if "apt-get install" in cmd[-1]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="Unable to locate package ros-jazzy-image-tools")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(rt, "_run", fake_run)
+
+    result = rt.run_ros2_managed("camera_driver", ["run", "image_tools", "cam2image"])
+
+    assert result["ok"] is False
+    assert "image_tools" in result["error"]
+    assert "installing it automatically failed" in result["error"]
+    assert not any(cmd[:3] == ["docker", "exec", "-d"] for cmd in calls)
+
+
+def test_run_ros2_managed_docker_installs_missing_package_then_starts(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "x"})
+    monkeypatch.setattr(rt, "ensure_container", lambda: None)
+    monkeypatch.setattr(rt, "stop_ros2_managed", lambda key, pattern="": {"ok": True, "stopped": 0})
+    calls = []
+    prefix_checks = {"count": 0}
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        if "pkg prefix" in cmd[-1]:
+            prefix_checks["count"] += 1
+            # missing on the first check, installed by the time of the recheck
+            ok = prefix_checks["count"] > 1
+            return SimpleNamespace(returncode=0 if ok else 1, stdout="", stderr="")
+        if "apt-get install" in cmd[-1]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(rt, "_run", fake_run)
+
+    result = rt.run_ros2_managed("camera_driver", ["run", "image_tools", "cam2image"])
+
+    assert result["ok"] is True
+    assert any("apt-get install" in cmd[-1] for cmd in calls)
+    assert any(cmd[:3] == ["docker", "exec", "-d"] for cmd in calls)
+
+
+def test_run_ros2_managed_docker_starts_after_package_check_passes(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "x"})
+    monkeypatch.setattr(rt, "ensure_container", lambda: None)
+    monkeypatch.setattr(rt, "stop_ros2_managed", lambda key, pattern="": {"ok": True, "stopped": 0})
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(rt, "_run", fake_run)
+
+    result = rt.run_ros2_managed("camera_driver", ["run", "image_tools", "cam2image"])
+
+    assert result["ok"] is True
+    assert any(cmd[:3] == ["docker", "exec", "-d"] for cmd in calls)
+
+
 def test_run_stop_calls_runtime(monkeypatch):
     captured = {}
 
@@ -391,75 +386,51 @@ def test_package_executables_lists_registered_commands(monkeypatch):
     assert "OK" in result["report"]
 
 
-def test_image_stream_starts_with_auto_raw_topic(monkeypatch):
-    calls = {}
-
-    def fake_run(args, timeout=15.0):
-        assert args == ["topic", "type", "/camera/image_raw"]
-        return {"ok": True, "backend": "native", "stdout": "sensor_msgs/msg/Image\n", "stderr": ""}
-
-    def fake_start(**kwargs):
-        calls.update(kwargs)
-        return {
-            "ok": True,
-            "backend": "native",
-            "stream_url": "http://127.0.0.1:9010/stream.mjpg",
-            "snapshot_url": "http://127.0.0.1:9010/snapshot.jpg",
-            "health_url": "http://127.0.0.1:9010/health.json",
-            "port": 9010,
-        }
-
-    monkeypatch.setattr(rt, "run_ros2", fake_run)
-    monkeypatch.setattr(rt, "start_image_stream", fake_start)
-    result = _NODE_REGISTRY["ROS2ImageStream"]({
-        "topic": "/camera/image_raw",
-        "message_type": "auto",
-        "stream_id": "cam",
-        "max_fps": 12.0,
-        "max_width": 800,
-    })
-    assert result["preview"] == "http://127.0.0.1:9010/stream.mjpg"
-    assert result["streaming"] is True
-    assert result["stream_url"] == result["preview"]
-    assert calls["message_type"] == "raw"
-    assert calls["topic"] == "/camera/image_raw"
-    assert calls["stream_id"] == "cam"
-    assert calls["max_fps"] == 12.0
-    assert calls["max_width"] == 800
+def test_host_camera_url_is_rewritten_so_the_container_can_reach_the_host():
+    # 127.0.0.1 inside the container is the container itself, so a host stream
+    # on loopback is invisible until it is rewritten.
+    assert rt.container_reachable_url("http://127.0.0.1:39000/stream.mjpg") == (
+        "http://host.docker.internal:39000/stream.mjpg"
+    )
+    assert rt.container_reachable_url("http://localhost:8080/s") == "http://host.docker.internal:8080/s"
+    assert rt.container_reachable_url("http://192.168.1.5:8080/s") == "http://192.168.1.5:8080/s"
 
 
-def test_image_stream_auto_detects_compressed_topic(monkeypatch):
-    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: {
-        "ok": True,
-        "backend": "native",
-        "stdout": "sensor_msgs/msg/CompressedImage\n",
-        "stderr": "",
-    })
-    monkeypatch.setattr(rt, "start_image_stream", lambda **kwargs: {
-        "ok": True,
-        "backend": "native",
-        "stream_url": "http://127.0.0.1:9011/stream.mjpg",
-        "snapshot_url": "http://127.0.0.1:9011/snapshot.jpg",
-    })
-    result = _NODE_REGISTRY["ROS2ImageStream"]({"topic": "/camera/compressed", "message_type": "auto"})
-    assert result["preview"].endswith("/stream.mjpg")
-    assert result["streaming"] is True
-    assert "compressed" in result["report"]
+def test_docker_stream_waits_for_real_http_not_just_an_open_port(monkeypatch):
+    # Docker publishes ports through a proxy that accepts TCP before the
+    # server inside the container is serving. Reporting ready on TCP alone
+    # left the editor's <img> pointed at a dead port, which it never retries.
+    class FakeProc:
+        def poll(self):
+            return None
 
+    monkeypatch.setattr(rt, "ensure_container", lambda: None)
+    monkeypatch.setattr(rt, "_ensure_container_stream_deps", lambda: None)
+    monkeypatch.setattr(rt, "_copy_to_container", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "stop_image_stream", lambda stream_id="": {"ok": True, "stopped": 0})
+    monkeypatch.setattr(rt, "_free_docker_stream_port", lambda preferred=0: (39000, ""))
+    monkeypatch.setattr(rt.subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(rt.time, "sleep", lambda seconds: None)
+    # a bare TCP connect always succeeds here, exactly like the docker proxy
+    monkeypatch.setattr(rt, "_port_open", lambda host, port, timeout=0.15: True)
+    http_calls = {"count": 0}
 
-def test_image_stream_stop_calls_runtime(monkeypatch):
-    captured = {}
+    def fake_http_ready(host, port, timeout=0.6):
+        http_calls["count"] += 1
+        return http_calls["count"] > 3  # not serving yet on the first probes
 
-    def fake_stop(stream_id=""):
-        captured["stream_id"] = stream_id
-        return {"ok": True, "stopped": 1}
+    monkeypatch.setattr(rt, "_stream_http_ready", fake_http_ready)
+    rt._streams.clear()
 
-    monkeypatch.setattr(rt, "stop_image_stream", fake_stop)
-    result = _NODE_REGISTRY["ROS2ImageStream"]({"action": "stop", "stream_id": "cam"})
-    assert captured["stream_id"] == "cam"
-    assert result["preview"] == ""
-    assert result["streaming"] is False
-    assert "stopped 1" in result["report"]
+    result = rt._start_docker_image_stream(
+        stream_id="camera", topic="/camera/image_raw", message_type="raw",
+        host="127.0.0.1", port=0, max_fps=10.0, max_width=960, jpeg_quality=80,
+    )
+
+    assert result["ok"] is True
+    assert http_calls["count"] > 3, "must keep probing HTTP until the server really answers"
+    assert result["stream_url"] == "http://127.0.0.1:39000/stream.mjpg"
+    rt._streams.clear()
 
 
 def test_docker_stream_port_allocator_uses_runtime_state(monkeypatch):
@@ -514,116 +485,7 @@ def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):
     assert rt._detached == []
 
 
-# --- native rclpy robot control ---------------------------------------------------
-
-def test_native_status_reports_topics(monkeypatch):
-    monkeypatch.setattr(nr, "available", lambda: (True, ""))
-    monkeypatch.setattr(nr, "rclpy_version", lambda: "9.9.9")
-    monkeypatch.setattr(nr, "topic_names_and_types", lambda timeout=1.0: [
-        ("/joint_states", ["sensor_msgs/msg/JointState"]),
-        ("/joint_commands", ["sensor_msgs/msg/JointState"]),
-    ])
-    monkeypatch.setattr(nr, "read_config", lambda *a, **k: {"commands_allowed": True})
-
-    result = _NODE_REGISTRY["ROS2NativeStatus"]({})
-
-    assert result["connected"] is True
-    assert result["ready"] is True
-    assert "/joint_states [sensor_msgs/msg/JointState]" in result["topics"]
-    assert "rclpy:     OK" in result["report"]
-
-
-def test_native_robot_discovery_reports_generic_profile(monkeypatch):
-    monkeypatch.setattr(nr, "available", lambda: (True, ""))
-    monkeypatch.setattr(nr, "read_config", lambda *a, **k: {
-        "commands_allowed": True,
-        "joints": {"shoulder_pan": {"lower": math.radians(-90.0), "upper": math.radians(90.0)}},
-    })
-    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {
-        "shoulder_pan": math.radians(10.0),
-        "elbow": math.radians(25.0),
-    })
-
-    result = _NODE_REGISTRY["ROS2NativeRobotDiscovery"]({"units": "degrees"})
-
-    assert result["connected"] is True
-    assert result["ready"] is True
-    assert result["robot"]["interface"]["kind"] == "native_ros2"
-    assert result["robot"]["pose"]["shoulder_pan"] == 10.0
-    assert result["robot"]["limits"]["shoulder_pan"]["lower"] == -90.0
-    assert "=> READY" in result["report"]
-
-
-def test_native_joint_state_reads_pose(monkeypatch):
-    monkeypatch.setattr(nr, "available", lambda: (True, ""))
-    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {"gripper": math.radians(45.0)})
-
-    result = _NODE_REGISTRY["ROS2NativeJointState"]({"units": "degrees"})
-
-    assert result["pose"]["gripper"] == 45.0
-    assert result["names"] == ["gripper"]
-    assert "native rclpy" in result["report"]
-
-
-def test_manual_move_releases_torque_and_keeps_pose_visible(monkeypatch):
-    published = []
-    monkeypatch.setattr(nr, "available", lambda: (True, ""))
-    monkeypatch.setattr(nr, "publish_string", lambda topic, value, timeout: published.append((topic, value)) or {"ok": True})
-    monkeypatch.setattr(nr, "read_config", lambda *a, **k: {
-        "commands_allowed": False,
-        "torque_enabled": False,
-        "teach_mode": True,
-        "last_error": "",
-    })
-    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {"shoulder_pan": math.radians(12.5)})
-
-    result = _NODE_REGISTRY["ROS2ManualMove"]({
-        "action": "release",
-        "transport": "native",
-        "units": "degrees",
-    })
-
-    assert result["live"] is True
-    assert result["mode"] == "released"
-    assert result["torque_enabled"] is False
-    assert math.isclose(result["pose"]["shoulder_pan"], 12.5)
-    assert json.loads(published[0][1]) == {"action": "enter_teach"}
-    assert "support the arm" in result["report"]
-
-
-def test_manual_move_hold_reports_safe_acknowledgement(monkeypatch):
-    monkeypatch.setattr(rb, "available", lambda: (True, ""))
-    monkeypatch.setattr(rb, "publish_string", lambda *a, **k: {"ok": True})
-    monkeypatch.setattr(rb, "read_config", lambda *a, **k: {
-        "commands_allowed": True,
-        "torque_enabled": True,
-        "teach_mode": False,
-        "last_error": "",
-    })
-    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: {"gripper": math.radians(20.0)})
-
-    result = _NODE_REGISTRY["ROS2ManualMove"]({"action": "hold", "transport": "rosbridge"})
-
-    assert result["live"] is True
-    assert result["mode"] == "hold"
-    assert result["torque_enabled"] is True
-    assert "live pose monitoring is active" in result["report"]
-
-
-def test_manual_move_dashboard_separates_control_from_robot_state():
-    dashboard = live._teach_dashboard(
-        {"shoulder_pan": 12.5},
-        "degrees",
-        False,
-        "Holding current pose.",
-        action="check",
-        live=True,
-    )
-    svg = base64.b64decode(dashboard.split(",", 1)[1]).decode("utf-8")
-
-    assert "CONTROL: MONITOR ONLY • LIVE" in svg
-    assert "ROBOT: HOLDING • TORQUE ON" in svg
-
+# --- rosbridge transport primitives -----------------------------------------------
 
 def test_rosbridge_string_control_publish_waits_and_repeats(monkeypatch):
     events = []
@@ -706,286 +568,7 @@ def test_joint_stream_discard_replaces_stale_shared_subscription(monkeypatch):
     assert closed == [True]
 
 
-def test_existing_manual_monitor_receives_confirmed_release_config(monkeypatch):
-    seeded = []
-    session = SimpleNamespace(seed_config=lambda config: seeded.append(dict(config)))
-    item = {
-        "ctx": {"action": "hold"},
-        "outputs": {"torque_enabled": True},
-        "dashboard_baselines": {"dashboard": {"shoulder_pan": 0.0}},
-        "session": session,
-    }
-    monkeypatch.setattr(live, "_teach_monitors", {"manual": item})
-    confirmed = {"torque_enabled": False, "teach_mode": True, "mode": "teach"}
-
-    live._start_teach_monitor(
-        "manual",
-        {"action": "release"},
-        {"torque_enabled": False, "mode": "released"},
-        confirmed,
-    )
-
-    assert seeded == [confirmed]
-    assert item["confirmed_config"] == confirmed
-    assert item["ctx"]["action"] == "release"
-    assert item["outputs"]["torque_enabled"] is False
-    assert item["dashboard_baselines"] == {}
-
-
-def test_manual_monitor_discards_stale_joint_subscription(monkeypatch):
-    class StopAfterOneTick:
-        def __init__(self):
-            self.calls = 0
-
-        def wait(self, _timeout):
-            self.calls += 1
-            return self.calls > 1
-
-    session = SimpleNamespace(
-        snapshot=lambda: ({"shoulder_pan": 0.0}, {"torque_enabled": False}, 9.0),
-    )
-    released = []
-    monkeypatch.setattr(
-        rb,
-        "release_joint_stream",
-        lambda value, **kwargs: released.append((value, kwargs)),
-    )
-    item = {
-        "ctx": {"transport": "rosbridge"},
-        "session": session,
-        "stop": StopAfterOneTick(),
-        "outputs": {},
-    }
-
-    live._teach_monitor_worker("manual", item)
-
-    assert released == [(session, {"discard": True})]
-    assert item["session"] is None
-    assert "subscription stale" in item["error"]
-
-
-def test_manual_move_run_once_returns_snapshot_without_monitor(monkeypatch):
-    started = []
-    monkeypatch.setattr(nr, "available", lambda: (True, ""))
-    monkeypatch.setattr(nr, "read_config", lambda *a, **k: {"torque_enabled": False, "last_error": ""})
-    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {"shoulder_pan": math.radians(7.0)})
-    monkeypatch.setattr(live, "_start_teach_monitor", lambda *a, **k: started.append(a))
-    monkeypatch.setattr(live, "_stop_teach_monitor", lambda *a, **k: None)
-
-    result = _NODE_REGISTRY["ROS2ManualMove"]({
-        "action": "check",
-        "transport": "native",
-        "units": "degrees",
-        "__run_mode__": "once",
-    })
-
-    assert result["live"] is False
-    assert result["updated_at"].startswith("snapshot ")
-    assert math.isclose(result["pose"]["shoulder_pan"], 7.0)
-    assert "one-time pose snapshot" in result["report"]
-    assert started == []
-
-
-def test_native_set_joint_previews_live_pose_when_disarmed(monkeypatch):
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("disarmed must never stream motion commands")
-
-    monkeypatch.setattr(nr, "available", lambda: (True, ""))
-    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: {
-        "shoulder_pan": math.radians(-11.6015625), "gripper": math.radians(25.0),
-    })
-    monkeypatch.setattr(nr, "stream_motion", fail_if_called)
-
-    result = _NODE_REGISTRY["ROS2NativeSetJoint"]({
-        "joint": "shoulder_pan",
-        "position": 0.0,
-        "units": "degrees",
-        "armed": False,
-    })
-
-    assert result["moved"] is False
-    assert result["report"].startswith("PREVIEW")
-    assert math.isclose(result["before"]["shoulder_pan"], -11.6015625, abs_tol=1e-6)
-    assert result["after"] == result["before"]
-    assert math.isclose(result["target"]["shoulder_pan"], 0.0, abs_tol=1e-6)
-
-
-def test_native_set_joint_streams_absolute_target(monkeypatch):
-    start = {"shoulder_pan": 0.0, "gripper": math.radians(25.0)}
-    after = {"shoulder_pan": 0.0, "gripper": math.radians(60.0)}
-    poses = iter([start, after])
-    captured = {}
-
-    monkeypatch.setattr(nr, "available", lambda: (True, ""))
-    monkeypatch.setattr(nr, "read_pose", lambda *a, **k: next(poses))
-
-    def fake_stream(command_topic, names, s, t, **kwargs):
-        captured["command_topic"] = command_topic
-        captured["names"] = names
-        captured["target"] = t
-        return {"ok": True, "sent": 40}
-
-    monkeypatch.setattr(nr, "stream_motion", fake_stream)
-
-    result = _NODE_REGISTRY["ROS2NativeSetJoint"]({
-        "joint": "gripper",
-        "position": 60.0,
-        "units": "degrees",
-        "armed": True,
-    })
-
-    assert result["moved"] is True
-    assert captured["command_topic"] == "/joint_commands"
-    assert captured["names"] == ["shoulder_pan", "gripper"]
-    assert math.isclose(captured["target"]["gripper"], math.radians(60.0), abs_tol=1e-6)
-    assert "native set gripper" in result["report"]
-
-
-def test_native_nodes_structured_error_without_rclpy(monkeypatch):
-    monkeypatch.setattr(nr, "available", lambda: (False, "rclpy is not importable"))
-
-    status = _NODE_REGISTRY["ROS2NativeStatus"]({})
-    assert status["ready"] is False
-    assert "MISSING" in status["report"]
-
-    state = _NODE_REGISTRY["ROS2NativeJointState"]({})
-    assert state["pose"] == {}
-    assert "rclpy is not importable" in state["report"]
-
-    robot = _NODE_REGISTRY["ROS2NativeRobotDiscovery"]({})
-    assert robot["ready"] is False
-    assert "rclpy is not importable" in robot["robot"]["error"]
-
-    set_joint = _NODE_REGISTRY["ROS2NativeSetJoint"]({"joint": "gripper", "armed": True})
-    assert set_joint["moved"] is False
-    assert "rclpy is not importable" in set_joint["report"]
-
-
-# --- universal live robot control over rosbridge ----------------------------------
-
-def test_rotate_joint_needs_a_joint_name():
-    result = _NODE_REGISTRY["ROS2RotateJoint"]({"joint": "", "armed": True})
-    assert result["report"].startswith("BLOCKED:")
-    assert result["moved"] is False
-
-
-def test_rotate_joint_blocked_when_disarmed(monkeypatch):
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("rosbridge must not be touched while disarmed")
-
-    monkeypatch.setattr(rb, "get_connection", fail_if_called)
-    monkeypatch.setattr(rb, "read_pose", fail_if_called)
-    monkeypatch.setattr(rb, "stream_motion", fail_if_called)
-    result = _NODE_REGISTRY["ROS2RotateJoint"]({"joint": "gripper", "armed": False})
-    assert result["report"].startswith("BLOCKED:")
-    assert result["moved"] is False
-
-
-def test_rotate_joint_refuses_read_only_bridge(monkeypatch):
-    monkeypatch.setattr(rb, "available", lambda: (True, ""))
-    monkeypatch.setattr(rb, "read_config", lambda *a, **k: {"commands_allowed": False, "joints": {}})
-
-    def fail_if_streamed(*args, **kwargs):
-        raise AssertionError("must not stream commands to a read-only bridge")
-
-    monkeypatch.setattr(rb, "stream_motion", fail_if_streamed)
-    result = _NODE_REGISTRY["ROS2RotateJoint"]({
-        "joint": "gripper", "armed": True, "config_topic": "/joint_config",
-    })
-    assert result["report"].startswith("BLOCKED:")
-    assert "read-only" in result["report"]
-
-
-def test_rotate_joint_streams_and_reports_motion(monkeypatch):
-    # values in radians on the wire; node is asked for degrees
-    start = {"shoulder_pan": 0.0, "gripper": math.radians(25.0)}
-    after = {"shoulder_pan": 0.0, "gripper": math.radians(60.0)}
-    poses = iter([start, after])
-    captured = {}
-
-    monkeypatch.setattr(rb, "available", lambda: (True, ""))
-    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: next(poses))
-
-    def fake_stream(host, port, command_topic, names, s, t, **kwargs):
-        captured["start"] = s
-        captured["target"] = t
-        return {"ok": True, "sent": 100}
-
-    monkeypatch.setattr(rb, "stream_motion", fake_stream)
-    result = _NODE_REGISTRY["ROS2RotateJoint"]({
-        "joint": "gripper", "delta": 35.0, "units": "degrees", "armed": True,
-    })
-    assert result["moved"] is True
-    assert math.isclose(captured["target"]["gripper"], math.radians(60.0), abs_tol=1e-6)
-    assert result["before"]["gripper"] == 25.0
-    assert "25.00 -> 60.00 degrees" in result["report"]
-
-
-def test_rotate_joint_clamps_to_config_limits(monkeypatch):
-    start = {"gripper": math.radians(90.0)}
-    monkeypatch.setattr(rb, "available", lambda: (True, ""))
-    monkeypatch.setattr(rb, "read_config", lambda *a, **k: {
-        "commands_allowed": True,
-        "joints": {"gripper": {"lower": 0.0, "upper": math.radians(100.0)}},
-    })
-    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: dict(start))
-    monkeypatch.setattr(rb, "stream_motion", lambda *a, **k: {"ok": True, "sent": 10})
-    result = _NODE_REGISTRY["ROS2RotateJoint"]({
-        "joint": "gripper", "delta": 35.0, "units": "degrees", "armed": True,
-        "config_topic": "/joint_config",
-    })
-    assert math.isclose(result["target"]["gripper"], 100.0, abs_tol=1e-6)
-    assert "clamped from 125.0" in result["report"]
-
-
-def test_robot_discovery_reports_generic_profile(monkeypatch):
-    monkeypatch.setattr(rb, "available", lambda: (True, ""))
-    monkeypatch.setattr(rb, "get_connection", lambda *a, **k: object())
-    monkeypatch.setattr(rb, "read_config", lambda *a, **k: {
-        "commands_allowed": True,
-        "joints": {"shoulder_pan": {"lower": math.radians(-90.0), "upper": math.radians(90.0)}},
-    })
-    monkeypatch.setattr(rb, "read_pose", lambda *a, **k: {
-        "shoulder_pan": math.radians(10.0),
-        "elbow": math.radians(25.0),
-    })
-
-    result = _NODE_REGISTRY["ROS2RobotDiscovery"]({
-        "host": "robot.local",
-        "port": 9090,
-        "units": "degrees",
-    })
-
-    assert result["connected"] is True
-    assert result["ready"] is True
-    assert result["joints"] == ["shoulder_pan", "elbow"]
-    assert result["pose"]["shoulder_pan"] == 10.0
-    assert result["robot"]["command_topic"] == "/joint_commands"
-    assert result["robot"]["commands_allowed"] is True
-    assert result["robot"]["limits"]["shoulder_pan"]["lower"] == -90.0
-    assert "=> READY" in result["report"]
-
-
-def test_robot_discovery_connection_failure_reports_diagnostics(monkeypatch):
-    monkeypatch.setattr(rb, "available", lambda: (True, ""))
-
-    def fail_connect(*args, **kwargs):
-        raise RuntimeError("Failed to connect to ROS")
-
-    monkeypatch.setattr(rb, "get_connection", fail_connect)
-    monkeypatch.setattr(live, "_rosbridge_connection_diagnostics", lambda host, port: [
-        f"tcp port: closed at {host}:{port}",
-        "local rosbridge_server: not found",
-        "FIX: sudo apt install ros-jazzy-rosbridge-server",
-    ])
-
-    result = _NODE_REGISTRY["ROS2RobotDiscovery"]({})
-
-    assert result["connected"] is False
-    assert result["robot"]["diagnostics"][0] == "tcp port: closed at 127.0.0.1:9090"
-    assert "local rosbridge_server: not found" in result["report"]
-    assert "sudo apt install ros-jazzy-rosbridge-server" in result["report"]
-
+# --- transport preflight diagnostics ----------------------------------------------
 
 def test_rosbridge_status_reports_connection_diagnostics(monkeypatch):
     monkeypatch.setattr(rb, "available", lambda: (True, ""))
@@ -1012,164 +595,6 @@ def test_live_nodes_structured_error_without_roslibpy(monkeypatch):
     status = _NODE_REGISTRY["ROS2RosbridgeStatus"]({})
     assert status["ready"] is False
     assert "MISSING" in status["report"]
-
-    live = _NODE_REGISTRY["ROS2JointState"]({})
-    assert live["pose"] == {}
-    assert "FAILED" in live["report"]
-
-    robot = _NODE_REGISTRY["ROS2RobotDiscovery"]({})
-    assert robot["ready"] is False
-    assert "roslibpy is not installed" in robot["robot"]["error"]
-
-
-def test_motion_dashboard_renders_before_after():
-    before = {"shoulder_pan": 0.0, "gripper": 25.0}
-    after = {"shoulder_pan": 0.0, "gripper": 60.0}
-    result = _NODE_REGISTRY["ROS2MotionDashboard"]({
-        "joint": "gripper",
-        "before": before,
-        "after": after,
-        "target": {"gripper": 60.0},
-        "moved": True,
-        "units": "degrees",
-    })
-    assert result["dashboard"].startswith("data:image/svg+xml;base64,")
-    assert result["summary"]["delta"] == 35.0
-    assert result["summary"]["moved"] is True
-
-
-def test_motion_dashboard_shows_live_pose_when_motion_data_is_empty():
-    pose = {"shoulder_pan": 12.5, "gripper": 25.0}
-    result = _NODE_REGISTRY["ROS2MotionDashboard"]({
-        "joint": "",
-        "pose": pose,
-        "before": {},
-        "after": {},
-        "target": {},
-        "moved": False,
-        "units": "degrees",
-    })
-    assert result["dashboard"].startswith("data:image/svg+xml;base64,")
-    assert result["summary"]["moved"] is False
-    assert result["summary"]["joints"] == ["gripper", "shoulder_pan"]
-    assert result["summary"]["positions"] == pose
-    assert result["summary"]["before_values"] == pose
-    assert result["summary"]["after_values"] == pose
-
-
-def test_motion_dashboard_renders_live_pose_state():
-    pose = {"shoulder_pan": 12.5, "gripper": 25.0}
-    result = _NODE_REGISTRY["ROS2MotionDashboard"]({
-        "pose": pose,
-        "before": {"shoulder_pan": 10.0, "gripper": 20.0},
-        "units": "degrees",
-        "__live_pose__": True,
-    })
-
-    assert result["live"] is True
-    assert result["summary"]["live"] is True
-    assert result["summary"]["positions"] == pose
-    assert result["summary"]["before_values"] == {"shoulder_pan": 10.0, "gripper": 20.0}
-
-
-def test_live_motion_dashboard_keeps_first_pose_as_baseline():
-    graph = type("GraphStub", (), {})()
-    graph._edges = [{"from": "manual", "from_port": "pose", "to": "dashboard", "to_port": "pose"}]
-    graph._nodes = {"dashboard": {"type": "ROS2MotionDashboard", "params": {}}}
-    ctx = {"__graph__": graph, "__node_id__": "manual"}
-    item = {}
-
-    live._live_motion_dashboard_outputs(ctx, {"shoulder_pan": 10.0}, "degrees", False, item)
-    outputs = live._live_motion_dashboard_outputs(ctx, {"shoulder_pan": 15.0}, "degrees", False, item)
-
-    summary = outputs["dashboard"]["summary"]
-    assert summary["live"] is True
-    assert summary["mode"] == "released"
-    assert summary["torque_enabled"] is False
-    assert summary["joint"] == "shoulder_pan"
-    assert summary["delta"] == 5.0
-    assert summary["before_values"] == {"shoulder_pan": 10.0}
-    assert summary["positions"] == {"shoulder_pan": 15.0}
-    svg = base64.b64decode(outputs["dashboard"]["dashboard"].split(",", 1)[1]).decode("utf-8")
-    assert "MOST CHANGED JOINT" in svg
-    assert "CHANGE SINCE LIVE START" in svg
-    assert "TARGET" not in svg
-
-
-def test_live_pose_pushes_into_robot_connection_dashboard(monkeypatch):
-    received = []
-    monkeypatch.setitem(
-        live._NODE_REGISTRY,
-        "RobotConnectionDashboard",
-        lambda ctx: received.append(dict(ctx)) or {
-            "dashboard": "data:image/svg+xml;base64,dGVzdA==",
-            "summary": {"profile_id": "my_so_arm101", "pose": dict(ctx["pose"])},
-        },
-    )
-    graph = type("GraphStub", (), {})()
-    graph._edges = [
-        {"from": "manual", "from_port": "pose", "to": "connection", "to_port": "pose"},
-        {"from": "discovery", "from_port": "robot", "to": "connection", "to_port": "robot"},
-        {"from": "status", "from_port": "ready", "to": "connection", "to_port": "interface_ready"},
-    ]
-    graph._nodes = {
-        "connection": {"type": "RobotConnectionDashboard", "params": {"connected": True}},
-    }
-    graph._cache = {
-        ("discovery", "robot"): {"driver": {"profile_id": "my_so_arm101"}},
-        ("status", "ready"): True,
-    }
-    ctx = {"__graph__": graph, "__node_id__": "manual"}
-
-    outputs = live._live_motion_dashboard_outputs(
-        ctx, {"shoulder_pan": 21.5}, "degrees", False, {}
-    )
-
-    assert outputs["connection"]["summary"]["pose"] == {"shoulder_pan": 21.5}
-    assert received[0]["robot"]["driver"]["profile_id"] == "my_so_arm101"
-    assert received[0]["interface_ready"] is True
-
-
-def test_live_pose_pushes_into_connected_robot_calibration_recorder(monkeypatch):
-    received = []
-    monkeypatch.setitem(
-        live._NODE_REGISTRY,
-        "RobotCalibrationRecorder",
-        lambda ctx: received.append(dict(ctx)) or {
-            "active": True,
-            "samples": 3,
-            "observed": {"shoulder_pan": {"min_deg": -5.0, "max_deg": 10.0}},
-            "report": "recording",
-        },
-    )
-    graph = type("GraphStub", (), {})()
-    graph._edges = [
-        {"from": "manual", "from_port": "pose", "to": "calibration", "to_port": "pose"},
-        {"from": "profile", "from_port": "profile", "to": "calibration", "to_port": "profile"},
-        {"from": "usb", "from_port": "recommended", "to": "calibration", "to_port": "hardware"},
-    ]
-    graph._nodes = {
-        "calibration": {
-            "type": "RobotCalibrationRecorder",
-            "params": {"run_id": "custom_robot_calibration", "safety_margin_deg": 4.0},
-        },
-    }
-    graph._cache = {
-        ("profile", "profile"): {"id": "my_robot", "joints": []},
-        ("usb", "recommended"): {"serial": "ABC123"},
-    }
-    ctx = {"__graph__": graph, "__node_id__": "manual"}
-
-    outputs = live._live_motion_dashboard_outputs(
-        ctx, {"shoulder_pan": 12.0}, "degrees", False, {}
-    )
-
-    assert outputs["calibration"]["active"] is True
-    assert received[0]["action"] == "_sample"
-    assert received[0]["pose"] == {"shoulder_pan": 12.0}
-    assert received[0]["torque_enabled"] is False
-    assert received[0]["profile"]["id"] == "my_robot"
-    assert received[0]["hardware"]["serial"] == "ABC123"
 
 
 # --- integration (needs native ros2 or Docker) ------------------------------------

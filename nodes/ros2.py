@@ -31,7 +31,7 @@ def _report(result: dict[str, Any], action: str) -> str:
 
 
 @node(
-    name="ROS2SystemCheck",
+    name="ROS2SystemCheck", component="diagnostics",
     category=_CATEGORY,
     description="Detect how ROS 2 will run here: native ros2 CLI, Docker container, or unavailable.",
     inputs={"refresh": Bool(default=True)},
@@ -56,7 +56,7 @@ def ros2_system_check(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2TopicList",
+    name="ROS2TopicList", component="topics",
     category=_CATEGORY,
     description="List live ROS 2 topics, optionally with message types.",
     inputs={"trigger": AnyPort, "show_types": Bool(default=True)},
@@ -72,7 +72,7 @@ def ros2_topic_list(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2TopicEcho",
+    name="ROS2TopicEcho", component="topics",
     category=_CATEGORY,
     description="Read messages from a topic (bounded by count and timeout). Set msg_type to skip type discovery.",
     inputs={
@@ -107,184 +107,7 @@ def ros2_topic_echo(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2CompressedImageSnapshot",
-    category=_CATEGORY,
-    description="Capture one sensor_msgs/msg/CompressedImage frame and render it as an image.",
-    inputs={
-        "trigger": AnyPort,
-        "topic": Text(default="/camera/front/compressed"),
-        "timeout": Float(default=10.0),
-    },
-    outputs={"image": Image, "metadata": Dict, "report": Text},
-)
-def ros2_compressed_image_snapshot(ctx: dict) -> dict:
-    topic = str(ctx.get("topic") or "/camera/front/compressed")
-    timeout = max(1.0, float(ctx.get("timeout") or 10.0))
-    result = rt.capture_image_snapshot(
-        topic=topic,
-        message_type="compressed",
-        timeout=timeout,
-        output_format="jpeg",
-        jpeg_quality=90,
-    )
-    if not result["ok"]:
-        return {"image": "", "metadata": {}, "report": _report(result, f"image snapshot {topic}")}
-    metadata = {"topic": topic, **dict(result.get("metadata") or {})}
-    return {
-        "image": str(result.get("image") or ""),
-        "metadata": metadata,
-        "report": f"captured compressed image frame from {topic} ({metadata.get('width', '?')}x{metadata.get('height', '?')})",
-    }
-
-
-@node(
-    name="ROS2ImageSnapshot",
-    category=_CATEGORY,
-    description="Capture one raw sensor_msgs/msg/Image frame and render it as a Blacknode image.",
-    inputs={
-        "trigger": AnyPort,
-        "topic": Text(default="/camera/image_raw"),
-        "timeout": Float(default=10.0),
-        "output_format": Enum(["png", "jpeg"], default="png"),
-        "jpeg_quality": Int(default=90),
-    },
-    outputs={"image": Image, "metadata": Dict, "report": Text},
-)
-def ros2_image_snapshot(ctx: dict) -> dict:
-    topic = str(ctx.get("topic") or "/camera/image_raw")
-    timeout = max(1.0, float(ctx.get("timeout") or 10.0))
-    output_format = str(ctx.get("output_format") or "png").strip().lower()
-    if output_format not in {"png", "jpeg"}:
-        output_format = "png"
-    result = rt.capture_image_snapshot(
-        topic=topic,
-        message_type="raw",
-        timeout=timeout,
-        output_format=output_format,
-        jpeg_quality=int(ctx.get("jpeg_quality") or 90),
-    )
-    if not result["ok"]:
-        return {"image": "", "metadata": {}, "report": _report(result, f"raw image snapshot {topic}")}
-    metadata = {"topic": topic, **dict(result.get("metadata") or {})}
-    return {
-        "image": str(result.get("image") or ""),
-        "metadata": metadata,
-        "report": (
-            f"captured {metadata.get('width', '?')}x{metadata.get('height', '?')} "
-            f"{metadata.get('encoding', 'image')} frame from {topic}"
-        ),
-    }
-
-
-def _resolve_image_message_type(topic: str, requested: str) -> tuple[str, str]:
-    value = requested.strip().lower()
-    if value in {"raw", "compressed"}:
-        return value, ""
-    result = rt.run_ros2(["topic", "type", topic], timeout=10)
-    if not result.get("ok"):
-        return "", result.get("error", "could not discover topic type")
-    types = [line.strip() for line in result.get("stdout", "").splitlines() if line.strip()]
-    if any("sensor_msgs/msg/CompressedImage" in line for line in types):
-        return "compressed", ""
-    if any("sensor_msgs/msg/Image" in line for line in types):
-        return "raw", ""
-    return "", f"{topic} is not a sensor_msgs Image topic (types: {', '.join(types) or 'none'})"
-
-
-@node(
-    name="ROS2ImageStream",
-    live=True,
-    category=_CATEGORY,
-    description="Start or stop a live MJPEG preview for a raw or compressed ROS 2 image topic.",
-    inputs={
-        "trigger": AnyPort,
-        "action": Enum(["start", "stop"], default="start"),
-        "stream_id": Text(default="camera"),
-        "topic": Text(default="/camera/image_raw"),
-        "message_type": Enum(["auto", "raw", "compressed"], default="auto"),
-        "host": Text(default="127.0.0.1"),
-        "port": Int(default=0),
-        "max_fps": Float(default=10.0),
-        "max_width": Int(default=960),
-        "jpeg_quality": Int(default=80),
-    },
-    outputs={
-        "preview": Image,
-        "streaming": Bool,
-        "stream_url": Text,
-        "snapshot_url": Text,
-        "stream_id": Text,
-        "report": Text,
-    },
-)
-def ros2_image_stream(ctx: dict) -> dict:
-    stream_id = str(ctx.get("stream_id") or "camera").strip() or "camera"
-    action = str(ctx.get("action") or "start").strip().lower()
-    if action == "stop":
-        result = rt.stop_image_stream(stream_id)
-        return {
-            "preview": "",
-            "streaming": False,
-            "stream_url": "",
-            "snapshot_url": "",
-            "stream_id": stream_id,
-            "report": f"stopped {result.get('stopped', 0)} image stream(s)",
-        }
-
-    topic = str(ctx.get("topic") or "/camera/image_raw").strip()
-    message_type, error = _resolve_image_message_type(topic, str(ctx.get("message_type") or "auto"))
-    if error:
-        return {
-            "preview": "",
-            "streaming": False,
-            "stream_url": "",
-            "snapshot_url": "",
-            "stream_id": stream_id,
-            "report": f"image stream FAILED: {error}",
-        }
-
-    host = str(ctx.get("host") or "127.0.0.1").strip() or "127.0.0.1"
-    port = max(0, int(ctx.get("port") or 0))
-    max_fps = max(0.1, min(60.0, float(ctx.get("max_fps") or 10.0)))
-    max_width = max(0, int(ctx.get("max_width") or 960))
-    jpeg_quality = max(1, min(100, int(ctx.get("jpeg_quality") or 80)))
-    result = rt.start_image_stream(
-        stream_id=stream_id,
-        topic=topic,
-        message_type=message_type,
-        host=host,
-        port=port,
-        max_fps=max_fps,
-        max_width=max_width,
-        jpeg_quality=jpeg_quality,
-    )
-    if not result.get("ok"):
-        return {
-            "preview": "",
-            "streaming": False,
-            "stream_url": "",
-            "snapshot_url": "",
-            "stream_id": stream_id,
-            "report": f"image stream FAILED: {result.get('error', 'unknown error')}",
-        }
-    stream_url = str(result["stream_url"])
-    snapshot_url = str(result["snapshot_url"])
-    report = (
-        f"LIVE STREAM running on {stream_url} from {topic} "
-        f"({message_type}, {max_fps:g} FPS max, width {max_width or 'source'})"
-    )
-    return {
-        "preview": stream_url,
-        "streaming": True,
-        "stream_url": stream_url,
-        "snapshot_url": snapshot_url,
-        "stream_id": stream_id,
-        "report": report,
-    }
-
-
-@node(
-    name="ROS2TopicPublish",
+    name="ROS2TopicPublish", component="topics",
     category=_CATEGORY,
     description="Publish one or more messages to a topic (YAML payload).",
     inputs={
@@ -309,14 +132,20 @@ def ros2_topic_publish(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2DemoPublisher",
+    name="ROS2DemoPublisher", component="topics",
     category=_CATEGORY,
-    description="Start or stop a background demo publisher so other nodes have a live topic.",
+    description=(
+        "Start or stop a background publisher so other nodes have a live topic. "
+        "Defaults to a std_msgs/String demo; set msg_type and payload to simulate any "
+        "message (e.g. a sensor_msgs/JointState robot with no hardware attached)."
+    ),
     inputs={
         "trigger": AnyPort,
         "action": Enum(["start", "stop"], default="start"),
         "topic": Text(default="/chatter"),
         "message": Text(default="hello from Blacknode"),
+        "msg_type": Text(default="std_msgs/msg/String"),
+        "payload": Text(default=""),
         "rate": Float(default=2.0),
     },
     outputs={"report": Text},
@@ -331,8 +160,12 @@ def ros2_demo_publisher(ctx: dict) -> dict:
         return {"report": _report(result, "stop demo publisher")}
     rate = float(ctx.get("rate") or 2.0)
     message = str(ctx.get("message") or "hello from Blacknode")
+    msg_type = str(ctx.get("msg_type") or "std_msgs/msg/String").strip() or "std_msgs/msg/String"
+    # payload wins when given, so this publishes any message type; otherwise
+    # keep the original String-only behaviour driven by `message`.
+    payload = str(ctx.get("payload") or "").strip() or f"data: {message}"
     result = rt.run_ros2_detached(
-        ["topic", "pub", "-r", str(rate), topic, "std_msgs/msg/String", f"data: {message}"]
+        ["topic", "pub", "-r", str(rate), topic, msg_type, payload]
     )
     if not result["ok"]:
         return {"report": _report(result, "start demo publisher")}
@@ -342,13 +175,13 @@ def ros2_demo_publisher(ctx: dict) -> dict:
     while time.time() < deadline:
         check = rt.run_ros2(["topic", "list"], timeout=10)
         if check["ok"] and topic in check["stdout"].split():
-            return {"report": f"demo publisher running on {topic} at {rate:g} Hz via {result['backend']}"}
+            return {"report": f"demo publisher running on {topic} ({msg_type}) at {rate:g} Hz via {result['backend']}"}
         time.sleep(1)
     return {"report": f"demo publisher started on {topic} but the topic is not discoverable yet"}
 
 
 @node(
-    name="ROS2Launch",
+    name="ROS2Launch", component="processes",
     category=_CATEGORY,
     description="Start or stop a background `ros2 launch ...` process.",
     inputs={
@@ -410,7 +243,7 @@ def ros2_launch(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2Run",
+    name="ROS2Run", component="processes",
     category=_CATEGORY,
     description="Start or stop a background `ros2 run <package> <executable> ...` process.",
     inputs={
@@ -487,7 +320,7 @@ def ros2_run(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2NodeList",
+    name="ROS2NodeList", component="diagnostics",
     category=_CATEGORY,
     description="List running ROS 2 nodes.",
     inputs={"trigger": AnyPort},
@@ -500,7 +333,7 @@ def ros2_node_list(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2ServiceList",
+    name="ROS2ServiceList", component="services",
     category=_CATEGORY,
     description="List live ROS 2 services, optionally with types.",
     inputs={"trigger": AnyPort, "show_types": Bool(default=True)},
@@ -516,7 +349,7 @@ def ros2_service_list(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2InterfaceShow",
+    name="ROS2InterfaceShow", component="diagnostics",
     category=_CATEGORY,
     description="Show a message/service definition — lets agents compose valid payloads.",
     inputs={"trigger": AnyPort, "interface": Text(default="std_msgs/msg/String")},
@@ -530,7 +363,7 @@ def ros2_interface_show(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2PackageExecutables",
+    name="ROS2PackageExecutables", component="processes",
     category=_CATEGORY,
     description="List executables registered by a ROS 2 package (`ros2 pkg executables`).",
     inputs={
@@ -552,23 +385,6 @@ def ros2_package_executables(ctx: dict) -> dict:
     return {"executables": executables, "report": _report(result, f"pkg executables {package}")}
 
 
-@node(
-    name="ROS2Command",
-    category=_CATEGORY,
-    description="Escape hatch: run any `ros2 ...` subcommand and capture its output.",
-    inputs={"trigger": AnyPort, "args": Text(default="topic list"), "timeout": Float(default=30.0)},
-    outputs={"output": Text, "report": Text},
-)
-def ros2_command(ctx: dict) -> dict:
-    raw = str(ctx.get("args") or "").strip()
-    if not raw:
-        return {"output": "", "report": "ros2 command FAILED: no arguments given"}
-    args = shlex.split(raw)
-    result = rt.run_ros2(args, timeout=float(ctx.get("timeout") or 30.0))
-    output = result["stdout"] if result["ok"] else result.get("error", "")
-    return {"output": output, "report": _report(result, f"ros2 {raw}")}
-
-
 def _svg_text(value: Any, limit: int = 90) -> str:
     text = " ".join(str(value or "").split())
     if len(text) > limit:
@@ -582,7 +398,7 @@ def _svg_data(svg: str) -> str:
 
 
 @node(
-    name="ROS2VisualDashboard",
+    name="ROS2VisualDashboard", component="diagnostics",
     category=_CATEGORY,
     description="Render ROS 2 roundtrip results as a visual pass/fail dashboard.",
     inputs={

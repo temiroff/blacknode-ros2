@@ -23,6 +23,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -33,9 +35,13 @@ _CONTAINER_STREAM_SCRIPT = "/tmp/blacknode_ros2_image_stream_server.py"
 _CONTAINER_SNAPSHOT_SCRIPT = "/tmp/blacknode_ros2_image_snapshot.py"
 
 _NO_BACKEND_HELP = (
-    "ROS 2 is not available: no `ros2` on PATH and no running Docker daemon. "
-    "Either install ROS 2 natively, or start Docker and pull the image with "
-    f"`docker pull {IMAGE}` (blacknode packages setup blacknode-ros2 does this)."
+    "ROS 2 is not available: no `ros2` on PATH and Docker is not installed. "
+    "Install ROS 2 natively, or install Docker Desktop — Blacknode starts it "
+    f"automatically and pulls `{IMAGE}` on first use."
+)
+_DOCKER_UNREACHABLE_HELP = (
+    "Docker CLI is installed but its daemon is not reachable. Start Docker "
+    "Desktop (or dockerd) manually and retry."
 )
 
 _cached_backend: dict[str, str] | None = None
@@ -172,7 +178,12 @@ def stop_runtime_services() -> dict[str, Any]:
 
 
 def detect_backend(refresh: bool = False) -> dict[str, str]:
-    """{"backend": "native"|"docker"|"none", "detail": ...} — cached after first call."""
+    """{"backend": "native"|"docker"|"none", "detail": ...} — cached after first call.
+
+    Docker is launched on demand: if the CLI is present but its daemon isn't
+    answering, :func:`ensure_docker_desktop` starts Docker Desktop and waits
+    for it, so templates work without the user starting Docker themselves.
+    """
     global _cached_backend
     if _cached_backend is not None and not refresh:
         return _cached_backend
@@ -180,8 +191,16 @@ def detect_backend(refresh: bool = False) -> dict[str, str]:
     if native:
         distro = os.environ.get("ROS_DISTRO", "")
         _cached_backend = {"backend": "native", "detail": f"{native}" + (f" ({distro})" if distro else "")}
-    elif shutil.which("docker") and _docker_ok():
-        _cached_backend = {"backend": "docker", "detail": f"image {IMAGE}, container {CONTAINER}"}
+    elif shutil.which("docker"):
+        if not _docker_ok():
+            launch_error = ensure_docker_desktop()
+            if launch_error:
+                _cached_backend = {"backend": "none", "detail": launch_error}
+                return _cached_backend
+        if _docker_ok():
+            _cached_backend = {"backend": "docker", "detail": f"image {IMAGE}, container {CONTAINER}"}
+        else:
+            _cached_backend = {"backend": "none", "detail": _DOCKER_UNREACHABLE_HELP}
     else:
         _cached_backend = {"backend": "none", "detail": _NO_BACKEND_HELP}
     return _cached_backend
@@ -192,6 +211,40 @@ def _docker_ok() -> bool:
         return _run(["docker", "version", "--format", "{{.Server.Version}}"], 10).returncode == 0
     except Exception:
         return False
+
+
+def _docker_desktop_executable() -> Path | None:
+    candidates = [
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Docker/Docker/Docker Desktop.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Docker/Docker Desktop.exe",
+    ]
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def ensure_docker_desktop(timeout: float = 90.0) -> str | None:
+    """Launch Docker Desktop if it's installed but not answering, and wait for it.
+
+    Windows-only (Blacknode's primary target here); a no-op elsewhere, or when
+    a daemon is already up. Returns an error string describing what to do
+    manually, or None once the daemon is reachable.
+    """
+    if _docker_ok():
+        return None
+    if sys.platform != "win32":
+        return None
+    executable = _docker_desktop_executable()
+    if executable is None:
+        return None
+    try:
+        subprocess.Popen([str(executable)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:
+        return f"could not launch Docker Desktop: {exc}"
+    deadline = time.monotonic() + max(10.0, timeout)
+    while time.monotonic() < deadline:
+        if _docker_ok():
+            return None
+        time.sleep(2.0)
+    return f"Docker Desktop was started but did not become ready within {timeout:g}s; open it manually and retry"
 
 
 def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
@@ -300,6 +353,47 @@ def _ensure_container_stream_deps() -> str | None:
     return None
 
 
+def _container_pkg_prefix_ok(package: str) -> bool:
+    check = _run(
+        [
+            "docker", "exec", CONTAINER, "bash", "-lc",
+            f"source /opt/ros/$ROS_DISTRO/setup.bash && ros2 pkg prefix {shlex.quote(package)}",
+        ],
+        15,
+    )
+    return check.returncode == 0
+
+
+def _ensure_container_package(package: str) -> str | None:
+    """Make sure a ROS 2 package resolves in the helper container, installing it via apt if not.
+
+    Returns an error string if the package still can't be found after trying
+    to install it, or None once ``ros2 pkg prefix <package>`` succeeds.
+    """
+    if _container_pkg_prefix_ok(package):
+        return None
+    apt_name = f"ros-$ROS_DISTRO-{package.replace('_', '-')}"
+    install = _run(
+        [
+            "docker", "exec", CONTAINER, "bash", "-lc",
+            f"apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y {apt_name}",
+        ],
+        240,
+    )
+    if install.returncode != 0:
+        detail = install.stderr.strip() or install.stdout.strip() or "apt-get install failed"
+        return (
+            f"ROS 2 package '{package}' is not installed in the {IMAGE} helper container, "
+            f"and installing it automatically failed: {detail}"
+        )
+    if not _container_pkg_prefix_ok(package):
+        return (
+            f"installed {apt_name} but ROS 2 still can't find package '{package}' "
+            "(the apt package name may not match; install the correct one manually)"
+        )
+    return None
+
+
 def run_ros2(args: list[str], timeout: float = 15.0) -> dict[str, Any]:
     """Run ``ros2 <args>``; returns {ok, stdout, stderr, backend, error?, timed_out?}."""
     backend = detect_backend()["backend"]
@@ -352,6 +446,13 @@ def run_ros2_detached(args: list[str]) -> dict[str, Any]:
             err = ensure_container()
             if err:
                 return {"ok": False, "backend": backend, "error": err}
+            # `ros2 launch <package> ...` fails silently under `docker exec -d`
+            # when the package is missing, so install it first exactly like the
+            # `ros2 run` path does.
+            if len(args) >= 2 and args[0] == "launch":
+                package_error = _ensure_container_package(args[1])
+                if package_error:
+                    return {"ok": False, "backend": backend, "error": package_error}
             shell = f"source /opt/ros/$ROS_DISTRO/setup.bash && exec ros2 {shlex.join(args)}"
             proc = _run(["docker", "exec", "-d", CONTAINER, "bash", "-lc", shell], 30)
             if proc.returncode != 0:
@@ -396,6 +497,19 @@ def run_ros2_managed(key: str, args: list[str]) -> dict[str, Any]:
         err = ensure_container()
         if err:
             return {"ok": False, "backend": backend, "error": err}
+        # `docker exec -d` only confirms the shell was dispatched, not that
+        # `ros2 run <package> <executable>` actually started inside it -- a
+        # missing package fails silently there, producing a false "started"
+        # report followed by a confusing downstream timeout. Verify (and, if
+        # missing, install) the package first so a missing package either
+        # gets fixed automatically or fails immediately with an actionable
+        # message, instead of surfacing as an opaque "no active publisher"
+        # from whatever's downstream of this run.
+        if len(args) >= 2 and args[0] == "run":
+            package = args[1]
+            package_error = _ensure_container_package(package)
+            if package_error:
+                return {"ok": False, "backend": backend, "error": package_error}
         shell = f"source /opt/ros/$ROS_DISTRO/setup.bash && exec ros2 {shlex.join(args)}"
         proc = _run(["docker", "exec", "-d", CONTAINER, "bash", "-lc", shell], 30)
         if proc.returncode != 0:
@@ -456,6 +570,25 @@ def _port_open(host: str, port: int, timeout: float = 0.15) -> bool:
         return False
 
 
+def _stream_http_ready(host: str, port: int, timeout: float = 0.6) -> bool:
+    """True once the MJPEG server actually answers HTTP on this port.
+
+    A bare TCP connect is not enough on the Docker backend: ``docker run -p``
+    publishes the port through a proxy that accepts connections immediately,
+    long before the server inside the container is listening. Reporting the
+    stream ready on TCP alone means the editor loads its <img> against a port
+    that resets the connection, and a broken <img> is never retried -- the
+    preview stays blank even though the stream comes up moments later.
+    """
+    try:
+        with urllib.request.urlopen(
+            f"http://{host}:{port}/health.json", timeout=timeout
+        ) as response:
+            return 200 <= int(getattr(response, "status", 200)) < 300
+    except Exception:
+        return False
+
+
 def _terminate_process(proc: subprocess.Popen) -> bool:
     if proc.poll() is not None:
         return False
@@ -477,6 +610,111 @@ def _terminate_process(proc: subprocess.Popen) -> bool:
 
 def _stream_script() -> Path:
     return Path(__file__).resolve().parents[1] / "scripts" / "ros2_image_stream_server.py"
+
+
+def probe_web_video(url: str, timeout: float = 10.0) -> tuple[bool, str]:
+    """Check a robot's web_video_server MJPEG URL actually delivers a stream.
+
+    Returns (ok, detail). Runs from the Blacknode process over plain HTTP, so
+    it does not need a local ROS graph or the Docker helper container.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            status = int(getattr(response, "status", 200))
+            if not 200 <= status < 300:
+                return False, f"robot answered HTTP {status}"
+            content_type = str(response.headers.get("Content-Type", ""))
+            if "multipart" not in content_type.lower():
+                return False, f"expected an MJPEG stream but got Content-Type '{content_type or 'unknown'}'"
+            # web_video_server answers 200 for an unknown topic and then never
+            # sends a frame, so require actual bytes before calling it live.
+            if not response.read(64):
+                return False, "connected but the robot sent no video data (is that topic publishing?)"
+            return True, content_type
+    except urllib.error.HTTPError as exc:
+        return False, f"robot answered HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        return False, f"cannot reach the robot ({exc.reason})"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _host_camera_script() -> Path:
+    return Path(__file__).resolve().parents[1] / "scripts" / "ros2_host_camera_publisher.py"
+
+
+def container_reachable_url(url: str) -> str:
+    """Rewrite a host-loopback URL so the Docker helper container can reach it.
+
+    Inside the container ``127.0.0.1`` is the container itself, so a stream the
+    host is serving on loopback is invisible. Docker Desktop publishes the host
+    as ``host.docker.internal``.
+    """
+    for loopback in ("127.0.0.1", "localhost", "[::1]"):
+        if f"//{loopback}:" in url or url.endswith(f"//{loopback}"):
+            return url.replace(f"//{loopback}", "//host.docker.internal", 1)
+    return url
+
+
+def start_host_camera_publisher(
+    *,
+    run_id: str,
+    source_url: str,
+    topic: str,
+    frame_id: str,
+    max_fps: float,
+) -> dict[str, Any]:
+    """Bridge a host MJPEG camera stream onto a ROS 2 image topic."""
+    backend = detect_backend()["backend"]
+    if backend == "none":
+        return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
+    script = _host_camera_script()
+    if not script.exists():
+        return {"ok": False, "backend": backend, "error": f"host camera helper not found: {script}"}
+
+    stop_ros2_managed(run_id, pattern="ros2_host_camera_publisher.py")
+
+    if backend == "docker":
+        err = ensure_container() or _ensure_container_stream_deps()
+        if err:
+            return {"ok": False, "backend": backend, "error": err}
+        container_script = "/tmp/blacknode_ros2_host_camera_publisher.py"
+        err = _copy_to_container(script, container_script)
+        if err:
+            return {"ok": False, "backend": backend, "error": err}
+        reachable = container_reachable_url(source_url)
+        helper_args = [
+            "--source-url", reachable,
+            "--topic", topic,
+            "--frame-id", frame_id,
+            "--max-fps", str(max_fps),
+        ]
+        shell = (
+            "source /opt/ros/$ROS_DISTRO/setup.bash && "
+            f"exec python3 {container_script} {shlex.join(helper_args)}"
+        )
+        started = _run(["docker", "exec", "-d", CONTAINER, "bash", "-lc", shell], 30)
+        if started.returncode != 0:
+            return {"ok": False, "backend": backend, "error": started.stderr.strip() or "docker exec failed"}
+        return {"ok": True, "backend": backend, "source_url": reachable}
+
+    args = [
+        sys.executable, str(script),
+        "--source-url", source_url,
+        "--topic", topic,
+        "--frame-id", frame_id,
+        "--max-fps", str(max_fps),
+    ]
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception as exc:
+        return {"ok": False, "backend": backend, "error": f"{type(exc).__name__}: {exc}"}
+    _managed_detached[run_id] = proc
+    return {"ok": True, "backend": backend, "source_url": source_url}
+
+
+def stop_host_camera_publisher(run_id: str) -> dict[str, Any]:
+    return stop_ros2_managed(run_id, pattern="ros2_host_camera_publisher.py")
 
 
 def _snapshot_script() -> Path:
@@ -616,16 +854,16 @@ def start_image_stream(
         proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except Exception as exc:
         return {"ok": False, "backend": backend, "error": f"{type(exc).__name__}: {exc}"}
-    deadline = time.monotonic() + 3.0
+    deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return {"ok": False, "backend": backend, "error": "stream helper exited before opening its HTTP port"}
-        if _port_open(host, selected_port):
+        if _stream_http_ready(host, selected_port):
             break
-        time.sleep(0.05)
+        time.sleep(0.1)
     else:
         _terminate_process(proc)
-        return {"ok": False, "backend": backend, "error": f"stream helper did not open http://{host}:{selected_port}"}
+        return {"ok": False, "backend": backend, "error": f"stream helper did not answer HTTP on http://{host}:{selected_port}"}
     url = f"http://{host}:{selected_port}/stream.mjpg"
     _streams[stream_id] = {
         "proc": proc,
@@ -715,17 +953,21 @@ def _start_docker_image_stream(
     except Exception as exc:
         return {"ok": False, "backend": "docker", "error": f"{type(exc).__name__}: {exc}"}
 
-    deadline = time.monotonic() + 5.0
+    # Docker publishes the port through a proxy that accepts TCP immediately,
+    # so wait for a real HTTP answer rather than a bare connect -- otherwise
+    # the editor loads its <img> before the server is serving and shows a
+    # permanently blank preview.
+    deadline = time.monotonic() + 25.0
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return {"ok": False, "backend": "docker", "error": "stream helper exited before opening its HTTP port"}
-        if _port_open("127.0.0.1", selected_port):
+        if _stream_http_ready("127.0.0.1", selected_port):
             break
-        time.sleep(0.05)
+        time.sleep(0.1)
     else:
         _terminate_process(proc)
         _run(["docker", "exec", CONTAINER, "pkill", "-f", marker], 15)
-        return {"ok": False, "backend": "docker", "error": f"stream helper did not open http://127.0.0.1:{selected_port}"}
+        return {"ok": False, "backend": "docker", "error": f"stream helper did not answer HTTP on http://127.0.0.1:{selected_port}"}
 
     public_host = "127.0.0.1" if host in {"", "0.0.0.0"} else host
     url = f"http://{public_host}:{selected_port}/stream.mjpg"

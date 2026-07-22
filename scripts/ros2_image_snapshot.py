@@ -17,6 +17,7 @@ from PIL import Image as PILImage
 
 try:
     import rclpy
+    from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import CompressedImage, Image
 except Exception as exc:  # pragma: no cover - depends on native ROS env
     print(json.dumps({"ok": False, "error": f"missing ROS 2 Python modules: {type(exc).__name__}: {exc}"}))
@@ -139,7 +140,10 @@ def main() -> int:
             event.set()
 
     msg_cls = CompressedImage if args.message_type == "compressed" else Image
-    node.create_subscription(msg_cls, args.topic, callback, 10)
+    # See ros2_image_stream_server.py: match sensor-data (best-effort) QoS so
+    # this connects to camera drivers that publish images best-effort, which
+    # a default (reliable) subscriber can never receive from.
+    node.create_subscription(msg_cls, args.topic, callback, qos_profile_sensor_data)
     deadline = time.monotonic() + max(0.1, float(args.timeout))
     try:
         while rclpy.ok() and not event.is_set() and time.monotonic() < deadline:

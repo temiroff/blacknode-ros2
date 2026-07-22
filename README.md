@@ -1,12 +1,13 @@
 # blacknode-ros2
 
-The package is organized as the horizontal `ros2` layer. Its default `core`
+The package is the horizontal `ros2` **integration layer**. Its default `core`
 component provides graph discovery, native and rosbridge transports, topics,
-services, processes, diagnostics, and the existing ROS-facing node contracts.
-Driver-specific ROS adapters live with their physical driver components and
-declare a versioned dependency on `blacknode-ros2/core`.
+services, processes, and diagnostics — and nothing domain-specific. Camera,
+joint-control, mobile-base, policy, and skill nodes are ROS 2 *adapters* that
+live in the package owning that capability and declare a versioned dependency
+on `blacknode-ros2/core`.
 
-**ROS 2 nodes for [Blacknode](https://github.com/temiroff/Blacknode).**
+**ROS 2 integration for [Blacknode](https://github.com/temiroff/Blacknode).**
 
 Install this Blacknode **extension package** to add ROS 2 to the visual
 workflow editor: list topics and
@@ -18,11 +19,17 @@ runs everything inside a Docker helper container (`ros:jazzy`), which works on
 Windows, macOS, and Linux. With a native/WSL ROS 2 install it talks to your
 real ROS graph directly.
 
+On Windows, if Docker is installed but Docker Desktop isn't running yet, the
+first ROS 2 node that needs it launches Docker Desktop and waits for the
+daemon before continuing — no separate manual startup step.
+
 ## Requirements
 
 - The [Blacknode](https://github.com/temiroff/Blacknode) main app
 - **One of:**
-  - Docker (the install step pulls `ros:jazzy` automatically), or
+  - Docker Desktop installed (the install step pulls `ros:jazzy`
+    automatically; Blacknode starts Docker Desktop itself if it isn't
+    already running), or
   - a native ROS 2 installation with `ros2` on PATH
 
 Neither installed? The nodes still load and return structured "ROS 2 not
@@ -55,9 +62,6 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2SystemCheck` | Detect the backend (native / Docker / unavailable) and probe the ROS graph |
 | `ROS2TopicList` | List live topics, optionally with message types |
 | `ROS2TopicEcho` | Read N messages from a topic, bounded by a timeout |
-| `ROS2CompressedImageSnapshot` | Capture and display one compressed ROS camera frame |
-| `ROS2ImageSnapshot` | Capture and display one raw `sensor_msgs/Image` camera frame |
-| `ROS2ImageStream` | Start/stop a live MJPEG preview for a raw or compressed ROS image topic |
 | `ROS2TopicPublish` | Publish one or more messages (YAML payload) to a topic |
 | `ROS2DemoPublisher` | Start/stop a background publisher so you can demo without a robot |
 | `ROS2Launch` | Start/stop a background `ros2 launch ...` process |
@@ -66,21 +70,32 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2ServiceList` | List live services, optionally with types |
 | `ROS2InterfaceShow` | Show a message/service definition — lets AI agents compose valid payloads |
 | `ROS2PackageExecutables` | List executable commands registered by a ROS 2 package |
-| `ROS2Command` | Escape hatch: run any `ros2 ...` subcommand and capture the output |
 | `ROS2Status` | Auto-select native `rclpy` or rosbridge, ensuring the local rosbridge service when needed |
-| `ROS2RobotDiscovery` | Advanced compatibility node for detecting an already-running external ROS robot interface |
-| `ROS2JointState` | Read any robot's current pose over the selected transport |
-| `ROS2SetJoint` | Set one absolute joint target; previews live before/target values while disarmed |
-| `ROS2RotateJoint` | Move one joint by a relative delta over the selected transport |
-| `ROS2FollowDetectionJoint` | Visual-servo one joint toward a CV2 detection center over the selected transport |
-| `ROS2ContinuousFollowDetectionJoint` | Cook once to start a persistent visual-servo service with one long-lived joint-state subscription and command publisher |
-| `ROS2LeaderFollower` | Stream a released leader pose into a separately calibrated follower with direct or bounded tracking, mapping, limits, and stale-data suppression |
-| `ROS2MotionDashboard` | Render before/after joint values so the graph visibly shows the robot moved |
-| `PolicySafetyGate` | Build calibrated joint, velocity, freshness, optional workspace, and replay-log safety settings |
-| `PolicyRuntime` | Preview continuously, arm explicitly, execute policy actions, disarm, emergency-stop, or hand control back to a person |
+| `ROS2BridgePublish` | Publish any message type to a topic over a rosbridge WebSocket |
+| `ROS2BridgeEcho` | Read messages from a topic over a rosbridge WebSocket |
+| `ROS2VisualDashboard` | Render a ROS 2 roundtrip as a visual PASS/FAIL dashboard |
 
 Action nodes carry an optional `trigger` input so you can sequence them in a
 graph (start the publisher → then echo).
+
+## What this package deliberately does not contain
+
+This is the horizontal **integration layer**: the ROS graph, topics, services,
+processes, and the native/rosbridge transports. Capability nodes are owned by
+the capability's own package and adapt it to this layer through a versioned
+dependency on `blacknode-ros2/core`:
+
+| Capability node | Lives in |
+|---|---|
+| `ROS2ImageStream`, `ROS2USBCamera`, `ROS2WebVideoStream` | `blacknode-perception` → `camera/ros2` adapter |
+| `ROS2JointState`, `ROS2SetJoint`, `ROS2ManualMove`, `ROS2MotionDashboard` | `blacknode-controllers` → `joint-control/ros2` adapter |
+| `ROS2BaseMove`, `ROS2BaseStop`, `ROS2LaserScanCheck`, `ROS2OdomState` | `blacknode-controllers` → `mobile-base/ros2` adapter |
+| `PolicyRuntime`, `PolicySafetyGate` | `blacknode-controllers` → `policy/ros2` adapter |
+| `ROS2FollowDetectionJoint`, `ROS2LeaderFollower` | `blacknode-skills` → `follow-person/ros2` adapter |
+
+Keeping the split this way means a second transport (Zenoh, MQTT, a direct
+Python bridge) can be added later as a sibling adapter without reorganizing
+any capability package.
 
 ## Policy deployment
 
@@ -105,35 +120,34 @@ the source of synchronized correction episodes.
 
 ## Templates
 
-Loadable from the editor's Templates tab:
+Loadable from the editor's Templates tab. Every template is self-contained:
+the leading check/status node starts Docker Desktop automatically (or reuses
+native ROS 2) if it isn't already running, so nothing needs to be started on
+the side before pressing **Run**.
 
-- **ROS 2 System Check** — quick preflight with a visible backend status output
-- **ROS 2 Live Roundtrip Demo** — press the top-bar **Run** button to start a
-  publisher on `/blacknode_demo`, capture a real message, and render a large
-  visual dashboard with the message path, pass/fail checks, and graph metrics
-- **ROS 2 Camera Snapshot** — capture a raw `/camera/image_raw`
-  `sensor_msgs/Image` frame and display it on the canvas
-- **ROS 2 Camera Livestream** — start a live MJPEG stream from
-  `/camera/image_raw` and preview it directly on the canvas
-- **ROS 2 Run Camera Livestream** — start any installed camera executable with
-  `ros2 run`, wait for its image topic, and preview the live stream
-- **ROS 2 Launch Camera Inspector** — fill any installed ROS package and launch
-  file, inspect package executables and live topics, then display one camera
-  frame from `/camera/image_raw`
-- **ROS 2 Motion Test** — auto-selects the available transport, reads the live
-  pose, and (once you set `armed=true`) moves one joint on the real robot while
-  rendering a before/after dashboard
+One template per feature — no overlapping variants:
+
+| Template | Feature it shows |
+|---|---|
+| **Publish & Subscribe Messages** | Messaging. Publishes on `/blacknode_demo`, subscribes and reads one back, lists the live graph, and draws a PASS/FAIL dashboard. |
+| **Run Your Own ROS 2 Package** | Process control. `ros2 launch` your own package, then confirm which topics and nodes appeared. |
+| **Connect to a Robot Over WiFi** | Remote transport. Reaches a robot running `rosbridge_server` at `ROBOT_IP` over a WebSocket: check, read a topic, publish back. |
 
 To verify it visually:
 
 1. Start Blacknode and open the **Templates** tab.
-2. Load **ROS 2 Live Roundtrip Demo**.
+2. Load **Publish & Subscribe Messages**.
 3. Press the green top-bar **Run** button.
 4. Confirm the dashboard verdict is green **PASS**.
 5. Confirm the message path shows `PUBLISHER PASS`, `/blacknode_demo`
    discovery `PASS`, and `ECHO CAPTURE PASS`.
 6. Confirm the captured message card contains
    `data: Blacknode ROS 2 roundtrip works`.
+
+Camera and joint-motion templates ship with the packages that own those
+capabilities: **Camera — Live Video** with `blacknode-perception`, and
+**Move a Robot Joint** with `blacknode-controllers`. Both still appear in the
+same Templates tab once those packages are installed.
 
 The demo publisher remains active so you can recook individual nodes. To stop
 it, select `ROS2DemoPublisher`, change `action` to `stop`, and cook that node,
@@ -169,17 +183,20 @@ Remove the helper container any time with `docker rm -f blacknode-ros2` — it i
 recreated on demand.
 
 Note: the Docker backend is a self-contained ROS graph inside the container.
-It is useful for demos, learning, and agent development. `ROS2ImageSnapshot`
-and `ROS2ImageStream` also work in this mode for image topics that exist inside
-the helper container; Blacknode exposes the MJPEG bridge on localhost using the
-configured stream port range. To talk to host USB cameras, native robot
+It is useful for demos, learning, and agent development. The camera adapter's
+`ROS2ImageStream` (in `blacknode-perception`) also works in this mode for image
+topics that exist inside the helper container; Blacknode exposes the MJPEG
+bridge on localhost using the configured stream port range, which this package
+owns. To talk to host USB cameras, native robot
 drivers, or robots on your LAN, use a native/WSL ROS 2 install or a rosbridge
 server (DDS discovery does not cross the Docker Desktop NAT on Windows/macOS).
 
-For livestream, cook `ROS2ImageStream` with `action=start`, then switch
-`action=stop` and cook it again when done. The preview shows a `LIVE`
-placeholder immediately, then live frames once the topic publishes; each frame
-is stamped with a small `LIVE` badge and the node also emits `streaming=true`.
+`ROS2ImageStream` follows the run mode. **Go Live** starts a continuous MJPEG
+stream and emits `streaming=true`; the preview shows a `LIVE` placeholder
+immediately, then live frames once the topic publishes. A plain one-shot
+**Run** captures a single frame and emits `streaming=false` instead, so a
+one-off run never leaves a background stream server behind. Set `action=stop`
+and cook it to stop a running stream.
 
 `ROS2Run` uses the same environment as the Blacknode server process. If your
 camera driver lives in a workspace overlay, make sure that overlay is sourced
@@ -217,10 +234,10 @@ The selected path is reported in every node result:
 Blacknode -> rclpy -> /joint_states + /joint_commands -> robot driver
 ```
 
-Use `Robot` for normal setup, then `ROS2Status` and `ROS2JointState`. Use
-`ROS2RobotDiscovery` only for an already-running external ROS robot. Use
-`ROS2SetJoint` for an absolute actuator target and
-`ROS2FollowDetectionJoint` for cube-following from a CV2 detection.
+Use `Robot` for normal setup, then `ROS2Status` from this package and
+`ROS2JointState` / `ROS2SetJoint` from the `blacknode-controllers`
+joint-control ROS 2 adapter. `ROS2FollowDetectionJoint`
+(`blacknode-skills`) adds cube-following from a CV2 detection.
 
 `ROS2SetJoint`'s `position` input is an **absolute target angle**, not a
 delta — `position: 0` means "go to 0°," not "don't move." With `armed=false`
@@ -272,11 +289,12 @@ for your robot. The same graph runs on native ROS 2 and Windows rosbridge.
 2. Make sure that driver publishes `/joint_states` and accepts
    `/joint_commands`.
    `ROS2Status` selects and prepares the available transport automatically.
-3. In Blacknode, load **ROS 2 Live Motion Test** and press **Run** — the
-   dashboard shows the live pose with `armed=false` (no motion).
-4. Set the `ROS2RotateJoint` node's `armed=true` and recook. It syncs to the
-   current pose, ramps the chosen joint by `delta`, streams the command at
-   `rate_hz` for `hold_seconds`, and reports the before/after angles.
+3. In Blacknode, load **Move a Robot Joint** (ships with
+   `blacknode-controllers`) and press **Run** — the dashboard shows the live
+   pose with `armed=false` (no motion).
+4. Set the `ROS2SetJoint` node's `joint` and target `position`, then
+   `armed=true`, and recook. It syncs to the current pose, ramps to the
+   target, streams the command at `rate_hz`, and reports before/after angles.
 5. For vision following, wire a CV2 detection into `ROS2FollowDetectionJoint`,
    set the joint name, tune `gain`, `deadband`, `invert`, and `max_step`, then
    arm it only after the preview report moves in the expected direction.

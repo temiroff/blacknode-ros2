@@ -5,11 +5,19 @@ state separately from the Blacknode core checkout that may contain it.
 
 ## Scope
 
-Keep ROS 2 discovery, native `rclpy`, rosbridge, topic/service/process nodes,
-ROS camera transport, joint-state transport, and ROS control nodes here. Keep
-robot contracts and profiles in `blacknode-robot`, physical hardware drivers
-in `blacknode-drivers`, generic controllers in `blacknode-controllers`, and
-perception algorithms in `blacknode-perception`.
+This is the integration layer only: ROS 2 graph discovery, native `rclpy`,
+rosbridge, and topic/service/process/diagnostic nodes, plus the runtime
+helpers (`ros2_runtime`, `ros2_native_runtime`, `rosbridge_runtime`) that
+capability adapters build on.
+
+**Do not add domain nodes here.** A node that is *about* a capability belongs
+to that capability's package as a ROS 2 adapter component requiring
+`blacknode-ros2/core`: camera/image nodes in `blacknode-perception`
+(`camera/ros2`), joint and base motion and policy in `blacknode-controllers`,
+task skills in `blacknode-skills`, physical drivers in `blacknode-drivers`,
+robot contracts and profiles in `blacknode-robot`. This keeps ownership
+single and lets a future Zenoh/MQTT layer be added as a sibling adapter
+without touching any capability package.
 
 ## Development rules
 

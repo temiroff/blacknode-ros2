@@ -1,0 +1,328 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Run Your Own ROS 2 Package",
+  "saved_at": "2026-07-21T00:00:00",
+  "entrypoint": {
+    "node_id": "nodes_out",
+    "port": "value"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Starts a ROS 2 package in the background and proves it came up, instead of you watching a terminal. WORKS AS-IS: press Run and it launches the demo talker/listener package, then lists the topics and nodes that appeared because of it (look for /chatter). Missing packages install themselves. FOR YOUR OWN PACKAGE: put your package in launch.package and your launch file in launch.launch_file, and set launch.expected_topic to a topic your package publishes so the node waits until it is really up. Set execs.package to any package to list what it can launch. Set launch action=stop to stop it again.",
+    "color": "#2e9fe6",
+    "required_packages": [
+      "blacknode-ros2"
+    ]
+  },
+  "node_meta": {
+    "check": {
+      "id": "check",
+      "type": "ROS2SystemCheck",
+      "params": {
+        "refresh": true
+      },
+      "pos": [
+        40,
+        160
+      ],
+      "inputs": [
+        "refresh"
+      ],
+      "outputs": [
+        "available",
+        "backend",
+        "report"
+      ],
+      "input_types": {
+        "refresh": "Bool"
+      },
+      "output_types": {
+        "available": "Bool",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "refresh": true
+      }
+    },
+    "execs": {
+      "id": "execs",
+      "type": "ROS2PackageExecutables",
+      "params": {
+        "package": "demo_nodes_cpp",
+        "timeout": 30.0
+      },
+      "pos": [
+        400,
+        40
+      ],
+      "inputs": [
+        "trigger",
+        "package",
+        "timeout"
+      ],
+      "outputs": [
+        "executables",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "package": "Text",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "executables": "List",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "package": "demo_nodes_cpp",
+        "timeout": 30.0
+      }
+    },
+    "launch": {
+      "id": "launch",
+      "type": "ROS2Launch",
+      "params": {
+        "action": "start",
+        "package": "demo_nodes_cpp",
+        "launch_file": "talker_listener_launch.py",
+        "arguments": "",
+        "expected_topic": "/chatter",
+        "wait_seconds": 10.0,
+        "stop_pattern": ""
+      },
+      "pos": [
+        400,
+        280
+      ],
+      "inputs": [
+        "trigger",
+        "action",
+        "package",
+        "launch_file",
+        "arguments",
+        "expected_topic",
+        "wait_seconds",
+        "stop_pattern"
+      ],
+      "outputs": [
+        "launched",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "package": "Text",
+        "launch_file": "Text",
+        "arguments": "Text",
+        "expected_topic": "Text",
+        "wait_seconds": "Float",
+        "stop_pattern": "Text"
+      },
+      "output_types": {
+        "launched": "Bool",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "package": "demo_nodes_cpp",
+        "launch_file": "talker_listener_launch.py",
+        "arguments": "",
+        "expected_topic": "/chatter",
+        "wait_seconds": 10.0,
+        "stop_pattern": ""
+      },
+      "input_choices": {
+        "action": [
+          "start",
+          "stop"
+        ]
+      }
+    },
+    "topics": {
+      "id": "topics",
+      "type": "ROS2TopicList",
+      "params": {
+        "show_types": true
+      },
+      "pos": [
+        800,
+        40
+      ],
+      "inputs": [
+        "trigger",
+        "show_types"
+      ],
+      "outputs": [
+        "topics",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "show_types": "Bool"
+      },
+      "output_types": {
+        "topics": "List",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "show_types": true
+      }
+    },
+    "nodes": {
+      "id": "nodes",
+      "type": "ROS2NodeList",
+      "params": {},
+      "pos": [
+        800,
+        280
+      ],
+      "inputs": [
+        "trigger"
+      ],
+      "outputs": [
+        "nodes",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any"
+      },
+      "output_types": {
+        "nodes": "List",
+        "report": "Text"
+      },
+      "input_defaults": {}
+    },
+    "execs_out": {
+      "id": "execs_out",
+      "type": "Output",
+      "params": {
+        "label": "what demo_nodes_cpp can run (set execs.package to your own)"
+      },
+      "pos": [
+        800,
+        520
+      ],
+      "inputs": [
+        "value"
+      ],
+      "outputs": [],
+      "input_types": {
+        "value": "Any"
+      },
+      "output_types": {},
+      "input_defaults": {}
+    },
+    "launch_report_out": {
+      "id": "launch_report_out",
+      "type": "Output",
+      "params": {
+        "label": "launch result"
+      },
+      "pos": [
+        1200,
+        520
+      ],
+      "inputs": [
+        "value"
+      ],
+      "outputs": [],
+      "input_types": {
+        "value": "Any"
+      },
+      "output_types": {},
+      "input_defaults": {}
+    },
+    "topics_out": {
+      "id": "topics_out",
+      "type": "Output",
+      "params": {
+        "label": "topics after launch (look for /chatter)"
+      },
+      "pos": [
+        1200,
+        40
+      ],
+      "inputs": [
+        "value"
+      ],
+      "outputs": [],
+      "input_types": {
+        "value": "Any"
+      },
+      "output_types": {},
+      "input_defaults": {}
+    },
+    "nodes_out": {
+      "id": "nodes_out",
+      "type": "Output",
+      "params": {
+        "label": "nodes after launch (look for talker/listener)"
+      },
+      "pos": [
+        1200,
+        280
+      ],
+      "inputs": [
+        "value"
+      ],
+      "outputs": [],
+      "input_types": {
+        "value": "Any"
+      },
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {
+      "from": "check",
+      "from_port": "report",
+      "to": "execs",
+      "to_port": "trigger"
+    },
+    {
+      "from": "check",
+      "from_port": "report",
+      "to": "launch",
+      "to_port": "trigger"
+    },
+    {
+      "from": "execs",
+      "from_port": "executables",
+      "to": "execs_out",
+      "to_port": "value"
+    },
+    {
+      "from": "launch",
+      "from_port": "report",
+      "to": "topics",
+      "to_port": "trigger"
+    },
+    {
+      "from": "launch",
+      "from_port": "report",
+      "to": "nodes",
+      "to_port": "trigger"
+    },
+    {
+      "from": "launch",
+      "from_port": "report",
+      "to": "launch_report_out",
+      "to_port": "value"
+    },
+    {
+      "from": "topics",
+      "from_port": "topics",
+      "to": "topics_out",
+      "to_port": "value"
+    },
+    {
+      "from": "nodes",
+      "from_port": "nodes",
+      "to": "nodes_out",
+      "to_port": "value"
+    }
+  ]
+}

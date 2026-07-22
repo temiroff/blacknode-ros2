@@ -24,6 +24,7 @@ from PIL import ImageDraw
 
 try:
     import rclpy
+    from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import CompressedImage, Image
 except Exception as exc:  # pragma: no cover - depends on native ROS env
     print(f"missing ROS 2 Python modules: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -294,7 +295,12 @@ def _spin_ros(store: FrameStore, stop_event: threading.Event, args: argparse.Nam
             store.fail(f"{type(exc).__name__}: {exc}")
 
     msg_cls = CompressedImage if args.message_type == "compressed" else Image
-    node.create_subscription(msg_cls, args.topic, handle_image, 10)
+    # Camera drivers (image_tools cam2image, usb_cam, v4l2_camera, ...)
+    # conventionally publish images with best-effort QoS. A subscriber on the
+    # default (reliable) QoS can never connect to a best-effort publisher --
+    # it looks "subscribed" but silently receives zero frames forever. Match
+    # the sensor-data QoS preset so this works against any compliant driver.
+    node.create_subscription(msg_cls, args.topic, handle_image, qos_profile_sensor_data)
     try:
         while rclpy.ok() and not stop_event.is_set():
             rclpy.spin_once(node, timeout_sec=0.1)

@@ -1,7 +1,7 @@
 {
   "kind": "blacknode.workflow",
   "schema_version": 1,
-  "name": "Rosbridge Robot Connection Test",
+  "name": "Connect to a Robot Over WiFi",
   "saved_at": "2026-07-19T00:00:00",
   "entrypoint": {
     "node_id": "ping",
@@ -9,9 +9,11 @@
   },
   "metadata": {
     "template": true,
-    "description": "First contact with any robot whose bringup runs rosbridge_server: check the WebSocket, read one live topic, and publish a test message. Replace ROBOT_IP on every node with your robot's IP address. Set the echo topic to any topic your robot publishes (battery, joint states, IMU); point the publish node at a buzzer or LED topic for a physical acknowledgment. Robots running web_video_server also serve camera streams at http://ROBOT_IP:8080.",
+    "description": "Connects Blacknode to a physical robot on your network that runs rosbridge_server, over a WebSocket instead of a local ROS graph. Replace ROBOT_IP on all three nodes with your robot's IP address, then press Run: it checks the connection, reads one live topic from the robot, and publishes a test message back to it. Set the echo topic to anything your robot publishes (battery, joint states, IMU), and point the publish node at a buzzer or LED topic to get a physical response you can see or hear.",
     "color": "#2e9fe6",
-    "required_packages": ["blacknode-ros2"]
+    "required_packages": [
+      "blacknode-ros2"
+    ]
   },
   "node_meta": {
     "bridge": {
@@ -22,9 +24,22 @@
         "port": 9090,
         "timeout": 10.0
       },
-      "pos": [40, 120],
-      "inputs": ["host", "port", "config_topic", "timeout"],
-      "outputs": ["connected", "ready", "config", "report"],
+      "pos": [
+        40,
+        120
+      ],
+      "inputs": [
+        "host",
+        "port",
+        "config_topic",
+        "timeout"
+      ],
+      "outputs": [
+        "connected",
+        "ready",
+        "config",
+        "report"
+      ],
       "input_types": {
         "host": "Text",
         "port": "Int",
@@ -53,9 +68,22 @@
         "msg_type": "sensor_msgs/msg/JointState",
         "timeout": 5.0
       },
-      "pos": [420, 120],
-      "inputs": ["trigger", "host", "port", "topic", "msg_type", "timeout"],
-      "outputs": ["message", "report"],
+      "pos": [
+        420,
+        120
+      ],
+      "inputs": [
+        "trigger",
+        "host",
+        "port",
+        "topic",
+        "msg_type",
+        "timeout"
+      ],
+      "outputs": [
+        "message",
+        "report"
+      ],
       "input_types": {
         "trigger": "Any",
         "host": "Text",
@@ -88,9 +116,24 @@
         "repeat": 1,
         "timeout": 5.0
       },
-      "pos": [800, 120],
-      "inputs": ["trigger", "host", "port", "topic", "msg_type", "payload", "repeat", "timeout"],
-      "outputs": ["published", "report"],
+      "pos": [
+        800,
+        120
+      ],
+      "inputs": [
+        "trigger",
+        "host",
+        "port",
+        "topic",
+        "msg_type",
+        "payload",
+        "repeat",
+        "timeout"
+      ],
+      "outputs": [
+        "published",
+        "report"
+      ],
       "input_types": {
         "trigger": "Any",
         "host": "Text",

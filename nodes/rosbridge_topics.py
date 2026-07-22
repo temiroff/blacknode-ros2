@@ -20,7 +20,7 @@ _CATEGORY = "ROS 2"
 
 
 @node(
-    name="ROS2BridgePublish",
+    name="ROS2BridgePublish", component="rosbridge",
     category=_CATEGORY,
     description=(
         "Publish a JSON payload to any topic over rosbridge — works with robot-specific message "
@@ -78,7 +78,7 @@ def ros2_bridge_publish(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2BridgeEcho",
+    name="ROS2BridgeEcho", component="rosbridge",
     category=_CATEGORY,
     description="Read one message from any topic over rosbridge and return it as a JSON dict.",
     inputs={
