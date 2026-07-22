@@ -28,6 +28,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from blacknode import console
+
 IMAGE = os.environ.get("BLACKNODE_ROS2_IMAGE", "ros:jazzy")
 CONTAINER = os.environ.get("BLACKNODE_ROS2_CONTAINER", "blacknode-ros2")
 STREAM_PORT_RANGE = os.environ.get("BLACKNODE_ROS2_STREAM_PORT_RANGE", "39000-39049")
@@ -399,6 +401,9 @@ def run_ros2(args: list[str], timeout: float = 15.0) -> dict[str, Any]:
     backend = detect_backend()["backend"]
     if backend == "none":
         return {"ok": False, "stdout": "", "stderr": "", "backend": backend, "error": _NO_BACKEND_HELP}
+    # Logged before it runs, so a command that blocks is visible while it blocks
+    # rather than only once it returns.
+    logged = console.record("ros2 " + " ".join(args), backend=backend, source="ros2")
     try:
         if backend == "native":
             proc = _run(["ros2", *args], timeout)
@@ -413,9 +418,11 @@ def run_ros2(args: list[str], timeout: float = 15.0) -> dict[str, Any]:
             )
             timed_out = proc.returncode == 124  # GNU timeout exit code
     except subprocess.TimeoutExpired:
+        message = f"`ros2 {' '.join(args)}` timed out after {timeout:g}s"
+        logged.finish(False, error=message)
         return {
             "ok": False, "stdout": "", "stderr": "", "backend": backend,
-            "error": f"`ros2 {' '.join(args)}` timed out after {timeout:g}s", "timed_out": True,
+            "error": message, "timed_out": True,
         }
     result: dict[str, Any] = {
         "ok": proc.returncode == 0,
@@ -428,6 +435,13 @@ def run_ros2(args: list[str], timeout: float = 15.0) -> dict[str, Any]:
         result["error"] = f"`ros2 {' '.join(args)}` timed out after {timeout:g}s"
     elif not result["ok"]:
         result["error"] = result["stderr"] or f"ros2 exited with code {proc.returncode}"
+    logged.finish(
+        bool(result["ok"]),
+        stdout=result["stdout"],
+        stderr=result["stderr"],
+        error=str(result.get("error") or ""),
+        exit_code=proc.returncode,
+    )
     return result
 
 
