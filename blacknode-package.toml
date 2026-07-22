@@ -30,7 +30,7 @@ capabilities = ["transport.ros2.native"]
 # Declared for the package roadmap; sources land in components/rosbridge/nodes.
 [components.rosbridge]
 description = "rosbridge websocket transport and server lifecycle."
-default = false
+default = true
 capabilities = ["transport.rosbridge"]
 
 # Declared for the package roadmap; sources land in components/topics/nodes.
@@ -40,7 +40,7 @@ node-types = [
 
 [components.topics]
 description = "Topic discovery, echo, and publication."
-default = false
+default = true
 capabilities = ["integration.ros2.topics"]
 
 # Declared for the package roadmap; sources land in components/services/nodes.
@@ -50,7 +50,7 @@ node-types = [
 
 [components.services]
 description = "Service discovery and invocation."
-default = false
+default = true
 capabilities = ["integration.ros2.services"]
 
 # Declared for the package roadmap; sources land in components/actions/nodes.
@@ -72,7 +72,7 @@ capabilities = ["integration.ros2.tf"]
 # Declared for the package roadmap; sources land in components/processes/nodes.
 [components.processes]
 description = "ros2 run/launch process supervision."
-default = false
+default = true
 capabilities = ["integration.ros2.processes"]
 
 # Declared for the package roadmap; sources land in components/diagnostics/nodes.
@@ -82,7 +82,7 @@ node-types = [
 
 [components.diagnostics]
 description = "Graph health, node lists, and status dashboards."
-default = false
+default = true
 capabilities = ["integration.ros2.diagnostics"]
 node-types = [
   "ROS2InterfaceShow", "ROS2NodeList", "ROS2Status", "ROS2SystemCheck", "ROS2VisualDashboard"
