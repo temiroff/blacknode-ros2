@@ -406,16 +406,20 @@ def run_ros2(args: list[str], timeout: float = 15.0) -> dict[str, Any]:
     logged = console.record("ros2 " + " ".join(args), backend=backend, source="ros2")
     try:
         if backend == "native":
-            proc = _run(["ros2", *args], timeout)
+            # Suppressed because this call reports itself above, with duration
+            # and output the bare spawn record cannot carry.
+            with console.suppress():
+                proc = _run(["ros2", *args], timeout)
             timed_out = False
         else:
             err = ensure_container()
             if err:
                 return {"ok": False, "stdout": "", "stderr": err, "backend": backend, "error": err}
-            proc = _run(
-                ["docker", "exec", CONTAINER, "bash", "-lc", _container_shell(args, timeout)],
-                timeout + 15,
-            )
+            with console.suppress():
+                proc = _run(
+                    ["docker", "exec", CONTAINER, "bash", "-lc", _container_shell(args, timeout)],
+                    timeout + 15,
+                )
             timed_out = proc.returncode == 124  # GNU timeout exit code
     except subprocess.TimeoutExpired:
         message = f"`ros2 {' '.join(args)}` timed out after {timeout:g}s"
