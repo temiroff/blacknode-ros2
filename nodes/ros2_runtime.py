@@ -554,12 +554,12 @@ def _free_docker_stream_port(preferred: int = 0) -> tuple[int, str]:
     }
     if preferred > 0:
         if preferred < start or preferred > end:
-            return 0, f"Docker ROS2ImageStream port must be within published range {start}-{end}; set port=0 to auto-pick"
-        return preferred, "" if preferred not in used else f"port {preferred} is already in use by another ROS2ImageStream"
+            return 0, f"Docker CameraROS2Subscribe port must be within published range {start}-{end}; set port=0 to auto-pick"
+        return preferred, "" if preferred not in used else f"port {preferred} is already in use by another CameraROS2Subscribe"
     for port in range(start, end + 1):
         if port not in used:
             return port, ""
-    return 0, f"no free Docker ROS2ImageStream port in range {start}-{end}"
+    return 0, f"no free Docker CameraROS2Subscribe port in range {start}-{end}"
 
 
 def _port_open(host: str, port: int, timeout: float = 0.15) -> bool:

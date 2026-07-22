@@ -2,7 +2,7 @@
 """Publish frames from an MJPEG source onto a ROS 2 image topic.
 
 This helper is launched through ros2_runtime.start_host_camera_publisher(),
-which the blacknode-perception camera ROS 2 adapter drives (ROS2USBCamera). It
+which the blacknode-perception camera ROS 2 adapter drives (CameraROS2Publish). It
 exists because a ROS 2 graph running inside the Docker helper container cannot
 open a host USB webcam: Docker Desktop gives the container no ``/dev/video*``.
 Blacknode's own Camera node can open that webcam on the host and serve it as

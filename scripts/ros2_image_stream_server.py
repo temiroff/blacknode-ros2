@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Serve a ROS 2 image topic as a local MJPEG stream.
 
-This helper is launched by the Blacknode ROS2ImageStream node. It intentionally
+This helper is launched by the Blacknode CameraROS2Subscribe node. It intentionally
 does not depend on cv_bridge so it can handle common raw encodings with NumPy
 and Pillow in the Blacknode environment.
 """
@@ -158,7 +158,7 @@ def _jpeg_bytes(image: PILImage.Image, *, max_width: int, quality: int, topic: s
 
 def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse.Namespace):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "BlacknodeROS2ImageStream/0.1"
+        server_version = "BlacknodeImageStream/0.1"
 
         def log_message(self, fmt: str, *values: Any) -> None:
             return

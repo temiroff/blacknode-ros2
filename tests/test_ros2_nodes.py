@@ -67,7 +67,7 @@ def test_capability_nodes_are_not_owned_by_the_integration_layer():
     this one -- that is what keeps the ROS 2 layer free of domain verticals.
     """
     for name in [
-        "ROS2ImageStream", "ROS2USBCamera", "ROS2WebVideoStream",
+        "CameraROS2Subscribe", "CameraROS2Publish", "CameraROS2Http",
         "ROS2JointState", "ROS2SetJoint", "ROS2ManualMove", "ROS2MotionDashboard",
     ]:
         owner = getattr(_NODE_REGISTRY.get(name), "_bn_package", "")
@@ -444,7 +444,7 @@ def test_docker_stream_port_allocator_uses_runtime_state(monkeypatch):
 
     assert rt._free_docker_stream_port() == (39001, "")
     assert rt._free_docker_stream_port(39002) == (39002, "")
-    assert rt._free_docker_stream_port(38999)[1].startswith("Docker ROS2ImageStream port must be within")
+    assert rt._free_docker_stream_port(38999)[1].startswith("Docker CameraROS2Subscribe port must be within")
 
 
 def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):

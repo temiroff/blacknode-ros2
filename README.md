@@ -87,7 +87,7 @@ dependency on `blacknode-ros2/core`:
 
 | Capability node | Lives in |
 |---|---|
-| `ROS2ImageStream`, `ROS2USBCamera`, `ROS2WebVideoStream` | `blacknode-perception` → `camera/ros2` adapter |
+| `CameraROS2Subscribe`, `CameraROS2Publish`, `CameraROS2Http` | `blacknode-perception` → `camera/ros2` adapter |
 | `ROS2JointState`, `ROS2SetJoint`, `ROS2ManualMove`, `ROS2MotionDashboard` | `blacknode-controllers` → `joint-control/ros2` adapter |
 | `ROS2BaseMove`, `ROS2BaseStop`, `ROS2LaserScanCheck`, `ROS2OdomState` | `blacknode-controllers` → `mobile-base/ros2` adapter |
 | `PolicyRuntime`, `PolicySafetyGate` | `blacknode-controllers` → `policy/ros2` adapter |
@@ -184,14 +184,14 @@ recreated on demand.
 
 Note: the Docker backend is a self-contained ROS graph inside the container.
 It is useful for demos, learning, and agent development. The camera adapter's
-`ROS2ImageStream` (in `blacknode-perception`) also works in this mode for image
+`CameraROS2Subscribe` (in `blacknode-perception`) also works in this mode for image
 topics that exist inside the helper container; Blacknode exposes the MJPEG
 bridge on localhost using the configured stream port range, which this package
 owns. To talk to host USB cameras, native robot
 drivers, or robots on your LAN, use a native/WSL ROS 2 install or a rosbridge
 server (DDS discovery does not cross the Docker Desktop NAT on Windows/macOS).
 
-`ROS2ImageStream` follows the run mode. **Go Live** starts a continuous MJPEG
+`CameraROS2Subscribe` follows the run mode. **Go Live** starts a continuous MJPEG
 stream and emits `streaming=true`; the preview shows a `LIVE` placeholder
 immediately, then live frames once the topic publishes. A plain one-shot
 **Run** captures a single frame and emits `streaming=false` instead, so a
