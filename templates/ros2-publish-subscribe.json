@@ -11,7 +11,13 @@
     "template": true,
     "description": "Shows ROS 2 messaging working end to end. Press Run: it publishes messages on /blacknode_demo, subscribes and reads one back, lists what is live on the graph, and draws a green PASS dashboard when the round trip succeeded. Nothing to set up first — it starts Docker and the publisher itself. Change the message text on the publisher node and run again to see your own text come back.",
     "color": "#2e9fe6",
-    "required_packages": ["blacknode-ros2"]
+    "required_packages": ["blacknode-ros2"],
+    "required_components": [
+      "blacknode-ros2/core",
+      "blacknode-ros2/topics",
+      "blacknode-ros2/services",
+      "blacknode-ros2/diagnostics"
+    ]
   },
   "node_meta": {
     "check": {
@@ -27,29 +33,36 @@
     },
     "publisher": {
       "id": "publisher",
-      "type": "ROS2DemoPublisher",
+      "type": "ROS2TopicPublisher",
       "params": {
         "action": "start",
         "topic": "/blacknode_demo",
-        "message": "Blacknode ROS 2 roundtrip works",
-        "rate": 5.0
+        "msg_type": "std_msgs/msg/String",
+        "payload": "data: Blacknode ROS 2 roundtrip works",
+        "rate_hz": 5.0
       },
       "pos": [360, 340],
-      "inputs": ["trigger", "action", "topic", "message", "rate"],
-      "outputs": ["report"],
+      "inputs": ["trigger", "action", "topic", "msg_type", "payload", "rate_hz"],
+      "outputs": ["running", "backend", "report"],
       "input_types": {
         "trigger": "Any",
         "action": "Text",
         "topic": "Text",
-        "message": "Text",
-        "rate": "Float"
+        "msg_type": "Text",
+        "payload": "Text",
+        "rate_hz": "Float"
       },
-      "output_types": {"report": "Text"},
+      "output_types": {
+        "running": "Bool",
+        "backend": "Text",
+        "report": "Text"
+      },
       "input_defaults": {
         "action": "start",
         "topic": "/blacknode_demo",
-        "message": "Blacknode ROS 2 roundtrip works",
-        "rate": 5.0
+        "msg_type": "std_msgs/msg/String",
+        "payload": "data: Blacknode ROS 2 roundtrip works",
+        "rate_hz": 5.0
       },
       "input_choices": {"action": ["start", "stop"]}
     },

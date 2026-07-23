@@ -6,7 +6,7 @@ Every node returns a structured report instead of raising, so workflows stay
 usable on machines without ROS.
 
 The ``trigger`` input is an optional pass-through: wire any upstream port
-into it to sequence ROS actions (e.g. start a demo publisher before echoing).
+into it to sequence ROS actions (e.g. start a topic publisher before echoing).
 """
 from __future__ import annotations
 
@@ -17,9 +17,10 @@ import time
 from typing import Any
 
 from blacknode.node import Any as AnyPort
-from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text, node
+from blacknode.node import Bool, Dict, Enum, Float, Image, Int, List, Text
 
 from . import ros2_runtime as rt
+from ._implementation import implementation_node as node
 
 _CATEGORY = "ROS 2"
 
@@ -132,52 +133,93 @@ def ros2_topic_publish(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2DemoPublisher", component="topics",
+    name="ROS2TopicPublisher", component="topics",
     category=_CATEGORY,
-    description=(
-        "Start or stop a background publisher so other nodes have a live topic. "
-        "Defaults to a std_msgs/String demo; set msg_type and payload to simulate any "
-        "message (e.g. a sensor_msgs/JointState robot with no hardware attached)."
-    ),
+    description="Start or stop a managed continuous publisher for any ROS 2 topic and message type.",
     inputs={
         "trigger": AnyPort,
         "action": Enum(["start", "stop"], default="start"),
         "topic": Text(default="/chatter"),
-        "message": Text(default="hello from Blacknode"),
         "msg_type": Text(default="std_msgs/msg/String"),
-        "payload": Text(default=""),
-        "rate": Float(default=2.0),
+        "payload": Text(default="data: hello from Blacknode"),
+        "rate_hz": Float(default=2.0),
     },
-    outputs={"report": Text},
+    outputs={"running": Bool, "backend": Text, "report": Text},
 )
-def ros2_demo_publisher(ctx: dict) -> dict:
-    action = str(ctx.get("action") or "start")
-    topic = str(ctx.get("topic") or "/chatter")
+def ros2_topic_publisher(ctx: dict) -> dict:
+    return _run_topic_publisher(ctx)
+
+
+def _run_topic_publisher(ctx: dict) -> dict:
+    action = str(ctx.get("action") or "start").strip().lower()
+    topic = str(ctx.get("topic") or "/chatter").strip() or "/chatter"
+    backend = rt.detect_backend()["backend"]
+    if action not in {"start", "stop"}:
+        return {
+            "running": False,
+            "backend": backend,
+            "report": f"topic publisher FAILED: action must be start or stop, got {action!r}",
+        }
+    key = f"topic-publisher:{topic}"
     if action == "stop":
-        result = rt.stop_detached()
+        pattern = "" if backend == "native" else f"ros2 topic pub .* {topic} "
+        result = rt.stop_ros2_managed(key, pattern=pattern)
         if result["ok"]:
-            return {"report": f"stopped {result.get('stopped', 0)} background publisher(s)"}
-        return {"report": _report(result, "stop demo publisher")}
-    rate = float(ctx.get("rate") or 2.0)
-    message = str(ctx.get("message") or "hello from Blacknode")
+            return {
+                "running": False,
+                "backend": result["backend"],
+                "report": f"stopped topic publisher on {topic}",
+            }
+        return {
+            "running": False,
+            "backend": result["backend"],
+            "report": _report(result, f"stop topic publisher on {topic}"),
+        }
+    try:
+        rate_hz = float(ctx.get("rate_hz", 2.0))
+    except (TypeError, ValueError):
+        rate_hz = 0.0
+    if rate_hz <= 0:
+        return {
+            "running": False,
+            "backend": backend,
+            "report": "topic publisher FAILED: rate_hz must be greater than 0",
+        }
     msg_type = str(ctx.get("msg_type") or "std_msgs/msg/String").strip() or "std_msgs/msg/String"
-    # payload wins when given, so this publishes any message type; otherwise
-    # keep the original String-only behaviour driven by `message`.
-    payload = str(ctx.get("payload") or "").strip() or f"data: {message}"
-    result = rt.run_ros2_detached(
-        ["topic", "pub", "-r", str(rate), topic, msg_type, payload]
+    payload = str(ctx.get("payload") or "data: hello from Blacknode").strip()
+    # Docker exec does not return the child PID, and matching the complete
+    # command is unreliable when structured payload punctuation is interpreted
+    # as a regular expression. A managed publisher is topic-scoped, so replace
+    # every older publisher for this exact topic before starting the new one.
+    replace_pattern = "" if backend == "native" else f"ros2 topic pub .* {topic} "
+    rt.stop_ros2_managed(key, pattern=replace_pattern)
+    result = rt.run_ros2_managed(
+        key,
+        ["topic", "pub", "-r", str(rate_hz), topic, msg_type, payload],
     )
     if not result["ok"]:
-        return {"report": _report(result, "start demo publisher")}
+        return {
+            "running": False,
+            "backend": result["backend"],
+            "report": _report(result, f"start topic publisher on {topic}"),
+        }
     # Wait until DDS discovery sees the topic, so downstream nodes wired to
     # this report can echo immediately instead of racing discovery.
     deadline = time.time() + 15
     while time.time() < deadline:
         check = rt.run_ros2(["topic", "list"], timeout=10)
         if check["ok"] and topic in check["stdout"].split():
-            return {"report": f"demo publisher running on {topic} ({msg_type}) at {rate:g} Hz via {result['backend']}"}
+            return {
+                "running": True,
+                "backend": result["backend"],
+                "report": f"topic publisher running on {topic} ({msg_type}) at {rate_hz:g} Hz via {result['backend']}",
+            }
         time.sleep(1)
-    return {"report": f"demo publisher started on {topic} but the topic is not discoverable yet"}
+    return {
+        "running": True,
+        "backend": result["backend"],
+        "report": f"topic publisher started on {topic} but the topic is not discoverable yet",
+    }
 
 
 @node(
@@ -401,6 +443,7 @@ def _svg_data(svg: str) -> str:
     name="ROS2VisualDashboard", component="diagnostics",
     category=_CATEGORY,
     description="Render ROS 2 roundtrip results as a visual pass/fail dashboard.",
+    hidden=True,
     inputs={
         "status": Text,
         "publisher": Text,

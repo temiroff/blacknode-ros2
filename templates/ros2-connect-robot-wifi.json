@@ -13,6 +13,10 @@
     "color": "#2e9fe6",
     "required_packages": [
       "blacknode-ros2"
+    ],
+    "required_components": [
+      "blacknode-ros2/core",
+      "blacknode-ros2/rosbridge"
     ]
   },
   "node_meta": {

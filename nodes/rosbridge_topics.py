@@ -12,9 +12,10 @@ import json
 import time
 
 from blacknode.node import Any as AnyPort
-from blacknode.node import Dict, Bool, Float, Int, Text, node
+from blacknode.node import Dict, Bool, Float, Int, Text
 
 from . import rosbridge_runtime as rb
+from ._implementation import implementation_node as node
 
 _CATEGORY = "ROS 2"
 

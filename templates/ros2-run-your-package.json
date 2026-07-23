@@ -13,6 +13,12 @@
     "color": "#2e9fe6",
     "required_packages": [
       "blacknode-ros2"
+    ],
+    "required_components": [
+      "blacknode-ros2/core",
+      "blacknode-ros2/topics",
+      "blacknode-ros2/processes",
+      "blacknode-ros2/diagnostics"
     ]
   },
   "node_meta": {

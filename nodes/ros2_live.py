@@ -19,11 +19,12 @@ import sys
 from typing import Any
 
 from blacknode.node import Any as AnyPort
-from blacknode.node import Bool, Dict, Enum, Float, Int, List, Text, node
+from blacknode.node import Bool, Dict, Enum, Float, Int, List, Text
 
 from . import ros2_native_runtime as nr
 from . import rosbridge_runtime as rb
 from . import rosbridge_service
+from ._implementation import implementation_node as node
 
 _CATEGORY = "ROS 2"
 
