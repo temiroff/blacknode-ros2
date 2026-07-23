@@ -259,7 +259,7 @@ but the user does not need to choose or start rosbridge manually.
 | `config_topic` | (empty) | optional latched `std_msgs/String` JSON with `commands_allowed` + per-joint `lower`/`upper` limits |
 | `units` | `radians` | `radians` (ROS standard) or `degrees` for the values you type and see |
 | `detection` / `detection_url` | `{}` / empty | CV2 detection dict or live detector JSON URL with `center.x` for `ROS2FollowDetectionJoint` |
-| `detection_stream` | `{}` | Latest-value stream handle from `CV2ColorObjectStream`; preferred by `ROS2ContinuousFollowDetectionJoint` |
+| `detection_stream` | `{}` | Latest-value stream handle from `TrackingObject`; preferred by `RobotFollow` |
 | `gain` / `max_step` | `35` / `8` | convert normalized image error into a bounded actuator step |
 
 The continuous follower is a managed runtime service. Cooking it once starts
