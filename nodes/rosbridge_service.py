@@ -7,7 +7,9 @@ import subprocess
 import time
 from pathlib import Path
 
-from blacknode.node import Bool, Enum, Float, Int, Text, node
+from blacknode.node import Bool, Enum, Float, Int, Text
+
+from ._implementation import implementation_node as node
 
 _IMAGE = "blacknode-rosbridge:jazzy"
 _CONTAINER = "blacknode-rosbridge"

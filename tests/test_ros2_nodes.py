@@ -9,6 +9,9 @@ Integration tests run only when a real backend (native ros2 or Docker) is
 available, and skip cleanly otherwise.
 """
 import json
+import shutil
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -18,6 +21,10 @@ import pytest
 
 import blacknode  # noqa: F401  triggers package discovery
 from blacknode.node import _NODE_REGISTRY
+from blacknode.packages import (
+    _PACKAGE_REGISTRY,
+    component_dependency_plan,
+)
 from blacknode.pkg.blacknode_ros2 import ros2_runtime as rt
 from blacknode.pkg.blacknode_ros2 import ros2_live as live
 from blacknode.pkg.blacknode_ros2 import ros2_native_runtime as nr
@@ -26,11 +33,11 @@ from blacknode.pkg.blacknode_ros2 import rosbridge_service as service
 from blacknode.workflow import validate_workflow
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
+PACKAGE_DIR = TEMPLATE_DIR.parent
 
 EXPECTED_NODES = [
     "ROS2BridgeEcho",
     "ROS2BridgePublish",
-    "ROS2DemoPublisher",
     "ROS2InterfaceShow",
     "ROS2Launch",
     "ROS2NodeList",
@@ -44,8 +51,34 @@ EXPECTED_NODES = [
     "ROS2TopicEcho",
     "ROS2TopicList",
     "ROS2TopicPublish",
+    "ROS2TopicPublisher",
     "ROS2VisualDashboard",
 ]
+
+EXPECTED_COMPONENT_NODES = {
+    "core": set(),
+    "rosbridge": {
+        "ROS2BridgeEcho",
+        "ROS2BridgePublish",
+        "ROS2RosbridgeServer",
+        "ROS2RosbridgeStatus",
+    },
+    "topics": {
+        "ROS2TopicEcho",
+        "ROS2TopicList",
+        "ROS2TopicPublish",
+        "ROS2TopicPublisher",
+    },
+    "services": {"ROS2ServiceList"},
+    "processes": {"ROS2Launch", "ROS2PackageExecutables", "ROS2Run"},
+    "diagnostics": {
+        "ROS2InterfaceShow",
+        "ROS2NodeList",
+        "ROS2Status",
+        "ROS2SystemCheck",
+        "ROS2VisualDashboard",
+    },
+}
 
 HAS_BACKEND = rt.detect_backend()["backend"] != "none"
 backend_only = pytest.mark.skipif(not HAS_BACKEND, reason="no ros2 CLI and no Docker daemon")
@@ -58,6 +91,107 @@ def test_all_nodes_registered_with_category():
         assert name in _NODE_REGISTRY, name
         assert _NODE_REGISTRY[name]._bn_category == "ROS 2"
         assert _NODE_REGISTRY[name]._bn_package == "blacknode-ros2"
+
+
+def test_components_own_their_registration_paths_and_depend_on_core():
+    info = _PACKAGE_REGISTRY["blacknode-ros2"]
+
+    assert set(info.components) == set(EXPECTED_COMPONENT_NODES)
+    assert info.components["core"]["node_paths"] == ["nodes"]
+    assert info.components["core"]["module_root"] is True
+
+    for component_name, expected_nodes in EXPECTED_COMPONENT_NODES.items():
+        component = info.components[component_name]
+        registered = {
+            name for name, fn in _NODE_REGISTRY.items()
+            if getattr(fn, "_bn_package", "") == "blacknode-ros2"
+            and getattr(fn, "_bn_component", "") == component_name
+        }
+
+        assert set(component["node_types"]) == expected_nodes
+        assert registered == expected_nodes
+        if component_name == "core":
+            assert component["requirements"] == []
+            continue
+
+        expected_path = f"components/{component_name}/nodes"
+        assert component["node_paths"] == [expected_path]
+        assert component["requirements"] == [{
+            "package": "",
+            "component": "core",
+            "version": "",
+        }]
+        for node_name in expected_nodes:
+            source = str(_NODE_REGISTRY[node_name]._bn_source_path).replace("\\", "/")
+            assert source.endswith(expected_path), (node_name, source)
+
+
+def test_component_dependency_plan_enables_core_first():
+    plan = component_dependency_plan("blacknode-ros2", "topics")
+
+    assert [
+        (item["package"], item["component"])
+        for item in plan["plan"]
+    ] == [
+        ("blacknode-ros2", "core"),
+        ("blacknode-ros2", "topics"),
+    ]
+
+
+def test_disabled_component_does_not_register_its_nodes(tmp_path):
+    probe_name = "blacknode-ros2-component-probe"
+    probe_dir = tmp_path / probe_name
+    shutil.copytree(
+        PACKAGE_DIR,
+        probe_dir,
+        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__"),
+    )
+    manifest_path = probe_dir / "blacknode-package.toml"
+    manifest = manifest_path.read_text(encoding="utf-8")
+    manifest_path.write_text(
+        manifest.replace(
+            'name = "blacknode-ros2"',
+            f'name = "{probe_name}"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".blacknode-components.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "packages": {probe_name: {"topics": False}},
+        }),
+        encoding="utf-8",
+    )
+
+    expected_nodes = sorted(set(EXPECTED_NODES) - EXPECTED_COMPONENT_NODES["topics"])
+    script = f"""
+from blacknode.packages import load_package
+info = load_package(r"{probe_dir}")
+assert info.ok, info.error
+assert "topics" not in info.enabled_components
+assert sorted(info.node_types) == {expected_nodes!r}
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_topic_publisher_has_generic_contract():
+    publisher = _NODE_REGISTRY["ROS2TopicPublisher"]
+
+    assert "ROS2DemoPublisher" not in _NODE_REGISTRY
+    assert publisher._bn_inputs == [
+        "trigger", "action", "topic", "msg_type", "payload", "rate_hz",
+    ]
+    assert publisher._bn_outputs == ["running", "backend", "report"]
+    assert publisher._bn_hidden is False
+    assert _NODE_REGISTRY["ROS2VisualDashboard"]._bn_hidden is True
 
 
 def test_capability_nodes_are_not_owned_by_the_integration_layer():
@@ -128,10 +262,34 @@ def test_templates_validate():
         assert report.ok, f"{path.name}: {report.to_dict()}"
 
 
+def test_templates_declare_exact_component_requirements():
+    expected = {
+        "ros2-connect-robot-wifi.json": {
+            "blacknode-ros2/core",
+            "blacknode-ros2/rosbridge",
+        },
+        "ros2-publish-subscribe.json": {
+            "blacknode-ros2/core",
+            "blacknode-ros2/topics",
+            "blacknode-ros2/services",
+            "blacknode-ros2/diagnostics",
+        },
+        "ros2-run-your-package.json": {
+            "blacknode-ros2/core",
+            "blacknode-ros2/topics",
+            "blacknode-ros2/processes",
+            "blacknode-ros2/diagnostics",
+        },
+    }
+    for path in sorted(TEMPLATE_DIR.glob("*.json")):
+        workflow = json.loads(path.read_text(encoding="utf-8"))
+        assert set(workflow["metadata"]["required_components"]) == expected[path.name]
+
+
 def test_visual_dashboard_reports_roundtrip_pass():
     result = _NODE_REGISTRY["ROS2VisualDashboard"]({
         "status": "backend: docker (ros:jazzy)\nros2 CLI reachable: yes",
-        "publisher": "demo publisher running on /blacknode_demo at 5 Hz via docker",
+        "publisher": "topic publisher running on /blacknode_demo at 5 Hz via docker",
         "echo_report": "received 1 message(s)",
         "messages": ["data: Blacknode ROS 2 roundtrip works"],
         "topics": ["/blacknode_demo [std_msgs/msg/String]"],
@@ -154,7 +312,9 @@ def test_no_backend_is_structured_error(monkeypatch):
     assert r["messages"] == []
     assert "FAILED" in r["report"]
 
-    r = _NODE_REGISTRY["ROS2DemoPublisher"]({"action": "start"})
+    r = _NODE_REGISTRY["ROS2TopicPublisher"]({"action": "start"})
+    assert r["running"] is False
+    assert r["backend"] == "none"
     assert "FAILED" in r["report"]
 
     r = _NODE_REGISTRY["ROS2Launch"]({"package": "demo_nodes_cpp", "launch_file": "talker.launch.py"})
@@ -211,6 +371,118 @@ def test_echo_keeps_partial_messages_on_timeout(monkeypatch):
     r = _NODE_REGISTRY["ROS2TopicEcho"]({"topic": "/chatter", "count": 5})
     assert len(r["messages"]) == 2
     assert "received 2" in r["report"]
+
+
+def test_topic_publisher_builds_managed_continuous_publish_command(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(rt, "stop_ros2_managed", lambda key, pattern="": {"ok": True, "backend": "native", "stopped": 0})
+
+    def fake_managed(key, args):
+        captured["key"] = key
+        captured["args"] = args
+        return {"ok": True, "backend": "native"}
+
+    monkeypatch.setattr(rt, "run_ros2_managed", fake_managed)
+    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: {
+        "ok": True,
+        "backend": "native",
+        "stdout": "/events",
+        "stderr": "",
+    })
+
+    result = _NODE_REGISTRY["ROS2TopicPublisher"]({
+        "action": "start",
+        "topic": "/events",
+        "msg_type": "std_msgs/msg/String",
+        "payload": "data: reusable",
+        "rate_hz": 4.0,
+    })
+
+    assert captured == {
+        "key": "topic-publisher:/events",
+        "args": [
+            "topic", "pub", "-r", "4.0", "/events",
+            "std_msgs/msg/String", "data: reusable",
+        ],
+    }
+    assert result["running"] is True
+    assert result["backend"] == "native"
+    assert "topic publisher running" in result["report"]
+
+
+def test_topic_publisher_start_replaces_older_docker_publishers_on_same_topic(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "test"})
+
+    def fake_stop(key, pattern=""):
+        captured.setdefault("stops", []).append((key, pattern))
+        return {"ok": True, "backend": "docker", "stopped": 3}
+
+    monkeypatch.setattr(rt, "stop_ros2_managed", fake_stop)
+    monkeypatch.setattr(
+        rt,
+        "run_ros2_managed",
+        lambda key, args: {"ok": True, "backend": "docker"},
+    )
+    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: {
+        "ok": True,
+        "backend": "docker",
+        "stdout": "/joint_states",
+        "stderr": "",
+    })
+
+    result = _NODE_REGISTRY["ROS2TopicPublisher"]({
+        "action": "start",
+        "topic": "/joint_states",
+        "msg_type": "sensor_msgs/msg/JointState",
+        "payload": "{name: ['joint'], position: [0.0]}",
+        "rate_hz": 10.0,
+    })
+
+    assert captured["stops"] == [
+        ("topic-publisher:/joint_states", "ros2 topic pub .* /joint_states "),
+    ]
+    assert result["running"] is True
+
+
+def test_topic_publisher_stop_is_scoped_to_topic(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "test"})
+
+    def fake_stop(key, pattern=""):
+        captured["key"] = key
+        captured["pattern"] = pattern
+        return {"ok": True, "backend": "docker", "stopped": 1}
+
+    monkeypatch.setattr(rt, "stop_ros2_managed", fake_stop)
+
+    result = _NODE_REGISTRY["ROS2TopicPublisher"]({
+        "action": "stop",
+        "topic": "/events",
+    })
+
+    assert captured == {
+        "key": "topic-publisher:/events",
+        "pattern": "ros2 topic pub .* /events ",
+    }
+    assert result["running"] is False
+    assert result["backend"] == "docker"
+
+
+def test_topic_publisher_rejects_invalid_rate_without_starting(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(
+        rt,
+        "run_ros2_managed",
+        lambda *args, **kwargs: pytest.fail("invalid configuration must not start a publisher"),
+    )
+
+    result = _NODE_REGISTRY["ROS2TopicPublisher"]({"rate_hz": 0})
+
+    assert result["running"] is False
+    assert "rate_hz must be greater than 0" in result["report"]
 
 
 def test_launch_builds_ros2_launch_command(monkeypatch):
@@ -608,10 +880,15 @@ def test_system_check_live():
 
 @backend_only
 def test_publish_then_echo_roundtrip():
-    start = _NODE_REGISTRY["ROS2DemoPublisher"](
-        {"action": "start", "topic": "/bn_test", "message": "roundtrip", "rate": 5.0}
+    start = _NODE_REGISTRY["ROS2TopicPublisher"](
+        {
+            "action": "start",
+            "topic": "/bn_test",
+            "payload": "data: roundtrip",
+            "rate_hz": 5.0,
+        }
     )
-    assert "FAILED" not in start["report"], start["report"]
+    assert start["running"] is True, start["report"]
     try:
         r = _NODE_REGISTRY["ROS2TopicEcho"]({"topic": "/bn_test", "count": 1, "timeout": 30.0})
         assert r["messages"], r["report"]
@@ -620,7 +897,7 @@ def test_publish_then_echo_roundtrip():
         topics = _NODE_REGISTRY["ROS2TopicList"]({"show_types": False})
         assert any("/bn_test" in t for t in topics["topics"]), topics
     finally:
-        _NODE_REGISTRY["ROS2DemoPublisher"]({"action": "stop"})
+        _NODE_REGISTRY["ROS2TopicPublisher"]({"action": "stop", "topic": "/bn_test"})
 
 
 @backend_only

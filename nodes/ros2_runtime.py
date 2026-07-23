@@ -450,7 +450,7 @@ def run_ros2(args: list[str], timeout: float = 15.0) -> dict[str, Any]:
 
 
 def run_ros2_detached(args: list[str]) -> dict[str, Any]:
-    """Start ``ros2 <args>`` in the background (e.g. a demo publisher)."""
+    """Start ``ros2 <args>`` in the background."""
     backend = detect_backend()["backend"]
     if backend == "none":
         return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}

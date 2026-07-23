@@ -62,8 +62,8 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2SystemCheck` | Detect the backend (native / Docker / unavailable) and probe the ROS graph |
 | `ROS2TopicList` | List live topics, optionally with message types |
 | `ROS2TopicEcho` | Read N messages from a topic, bounded by a timeout |
-| `ROS2TopicPublish` | Publish one or more messages (YAML payload) to a topic |
-| `ROS2DemoPublisher` | Start/stop a background publisher so you can demo without a robot |
+| `ROS2TopicPublish` | Publish a bounded number of messages to a topic |
+| `ROS2TopicPublisher` | Start or stop a managed continuous topic publisher |
 | `ROS2Launch` | Start/stop a background `ros2 launch ...` process |
 | `ROS2Run` | Start/stop a background `ros2 run <package> <executable> ...` process |
 | `ROS2NodeList` | List running ROS nodes |
@@ -73,10 +73,27 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2Status` | Auto-select native `rclpy` or rosbridge, ensuring the local rosbridge service when needed |
 | `ROS2BridgePublish` | Publish any message type to a topic over a rosbridge WebSocket |
 | `ROS2BridgeEcho` | Read messages from a topic over a rosbridge WebSocket |
-| `ROS2VisualDashboard` | Render a ROS 2 roundtrip as a visual PASS/FAIL dashboard |
 
 Action nodes carry an optional `trigger` input so you can sequence them in a
 graph (start the publisher → then echo).
+
+## Components
+
+Each selectable component owns its node registration path and depends on the
+shared `core` runtime where needed:
+
+| Component | Provides |
+|---|---|
+| `core` | Stable native ROS 2, rosbridge, CLI/Docker, stream, and managed-service runtime contracts |
+| `topics` | Topic discovery, bounded publish/echo, and continuous publishing |
+| `services` | Service discovery |
+| `processes` | Managed `ros2 run` and `ros2 launch` processes |
+| `diagnostics` | Backend status, graph inspection, and interface inspection |
+| `rosbridge` | WebSocket topic I/O, connection status, and local server lifecycle |
+
+Templates declare the exact components they use. Enabling any feature component
+resolves `core` first, and disabling a component removes its nodes from package
+discovery.
 
 ## What this package deliberately does not contain
 
@@ -149,8 +166,8 @@ capabilities: **Camera — Live Video** with `blacknode-perception`, and
 **Move a Robot Joint** with `blacknode-controllers`. Both still appear in the
 same Templates tab once those packages are installed.
 
-The demo publisher remains active so you can recook individual nodes. To stop
-it, select `ROS2DemoPublisher`, change `action` to `stop`, and cook that node,
+The topic publisher remains active so you can recook individual nodes. To stop
+it, select `ROS2TopicPublisher`, change `action` to `stop`, and cook that node,
 or run:
 
 ```bash

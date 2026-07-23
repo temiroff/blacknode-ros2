@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-ros2"
-version = "0.4.0"
+version = "0.5.0"
 description = "ROS 2 graph, topic, service, process, native, and rosbridge integration primitives."
 requires-blacknode = ">=0.3.0"
 layer = "ros2"
@@ -21,69 +21,62 @@ pip = ["PyYAML>=6", "roslibpy>=1.5", "numpy>=1.24", "pillow>=10"]
 imports = ["yaml", "roslibpy", "numpy", "PIL"]
 docker = ["ros:jazzy"]
 
-# Declared for the package roadmap; sources land in components/native/nodes.
-[components.native]
-description = "Native rclpy transport for topics, services, and actions."
-default = false
-capabilities = ["transport.ros2.native"]
-
-# Declared for the package roadmap; sources land in components/rosbridge/nodes.
 [components.rosbridge]
 description = "rosbridge websocket transport and server lifecycle."
 default = true
 capabilities = ["transport.rosbridge"]
-
-# Declared for the package roadmap; sources land in components/topics/nodes.
+nodes = ["components/rosbridge/nodes"]
 node-types = [
   "ROS2BridgeEcho", "ROS2BridgePublish", "ROS2RosbridgeServer", "ROS2RosbridgeStatus"
 ]
+
+[components.rosbridge.dependencies]
+requires = [{ component = "core" }]
 
 [components.topics]
 description = "Topic discovery, echo, and publication."
 default = true
 capabilities = ["integration.ros2.topics"]
-
-# Declared for the package roadmap; sources land in components/services/nodes.
+nodes = ["components/topics/nodes"]
 node-types = [
-  "ROS2DemoPublisher", "ROS2TopicEcho", "ROS2TopicList", "ROS2TopicPublish"
+  "ROS2TopicEcho", "ROS2TopicList", "ROS2TopicPublish", "ROS2TopicPublisher"
 ]
 
+[components.topics.dependencies]
+requires = [{ component = "core" }]
+
 [components.services]
-description = "Service discovery and invocation."
+description = "Service discovery."
 default = true
 capabilities = ["integration.ros2.services"]
-
-# Declared for the package roadmap; sources land in components/actions/nodes.
+nodes = ["components/services/nodes"]
 node-types = [
   "ROS2ServiceList"
 ]
 
-[components.actions]
-description = "Action servers, goals, and feedback streams."
-default = false
-capabilities = ["integration.ros2.actions"]
+[components.services.dependencies]
+requires = [{ component = "core" }]
 
-# Declared for the package roadmap; sources land in components/tf/nodes.
-[components.tf]
-description = "Transform tree lookup and frame conversion."
-default = false
-capabilities = ["integration.ros2.tf"]
-
-# Declared for the package roadmap; sources land in components/processes/nodes.
 [components.processes]
 description = "ros2 run/launch process supervision."
 default = true
 capabilities = ["integration.ros2.processes"]
-
-# Declared for the package roadmap; sources land in components/diagnostics/nodes.
+nodes = ["components/processes/nodes"]
 node-types = [
   "ROS2Launch", "ROS2PackageExecutables", "ROS2Run"
 ]
+
+[components.processes.dependencies]
+requires = [{ component = "core" }]
 
 [components.diagnostics]
 description = "Graph health, node lists, and status dashboards."
 default = true
 capabilities = ["integration.ros2.diagnostics"]
+nodes = ["components/diagnostics/nodes"]
 node-types = [
   "ROS2InterfaceShow", "ROS2NodeList", "ROS2Status", "ROS2SystemCheck", "ROS2VisualDashboard"
 ]
+
+[components.diagnostics.dependencies]
+requires = [{ component = "core" }]
