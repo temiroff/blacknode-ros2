@@ -1,8 +1,9 @@
-"""Manage a local rosbridge container for one-click workflows."""
+"""Manage a local native or container-backed rosbridge service."""
 from __future__ import annotations
 
 import os
 import platform
+import shlex
 import shutil
 import socket
 import subprocess
@@ -19,6 +20,7 @@ _DOCKERFILE = """FROM ros:jazzy
 RUN apt-get update && apt-get install -y --no-install-recommends ros-jazzy-rosbridge-server && rm -rf /var/lib/apt/lists/*
 CMD ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=0.0.0.0 port:=9090"]
 """
+_NATIVE_PROCESSES: dict[int, subprocess.Popen] = {}
 
 
 def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
@@ -38,6 +40,111 @@ def _docker_ready() -> bool:
         return _run(["docker", "info"], 8).returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+
+
+def _native_ros_setup() -> Path | None:
+    distro = os.environ.get("ROS_DISTRO", "").strip()
+    if distro:
+        configured = Path("/opt/ros") / distro / "setup.bash"
+        if configured.is_file():
+            return configured
+    root = Path("/opt/ros")
+    if not root.is_dir():
+        return None
+    candidates = sorted(root.glob("*/setup.bash"), reverse=True)
+    jazzy = root / "jazzy" / "setup.bash"
+    return jazzy if jazzy.is_file() else (candidates[0] if candidates else None)
+
+
+def _native_ros_command(args: list[str]) -> list[str] | None:
+    executable = shutil.which("ros2")
+    if executable:
+        return [executable, *args]
+    setup = _native_ros_setup()
+    if setup is None:
+        return None
+    shell = f"source {shlex.quote(str(setup))} && exec ros2 {shlex.join(args)}"
+    return ["bash", "-lc", shell]
+
+
+def _stop_native_rosbridge(port: int) -> bool:
+    proc = _NATIVE_PROCESSES.pop(port, None)
+    if proc is None or proc.poll() is not None:
+        return False
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=3)
+    return True
+
+
+def _start_native_rosbridge(
+    host: str,
+    port: int,
+    timeout: float,
+    *,
+    expose_lan: bool,
+) -> str | None:
+    probe = _native_ros_command(["pkg", "prefix", "rosbridge_server"])
+    if probe is None:
+        return None
+    available = _run(probe, 20)
+    if available.returncode != 0:
+        setup = _native_ros_setup()
+        distro = os.environ.get("ROS_DISTRO", "").strip()
+        if not distro and setup is not None:
+            distro = setup.parent.name
+        distro = distro or "jazzy"
+        raise RuntimeError(
+            "Native ROS 2 is installed, but rosbridge_server is missing. Run "
+            f"sudo apt-get install ros-{distro}-rosbridge-server, then retry."
+        )
+
+    old = _NATIVE_PROCESSES.get(port)
+    if old is not None:
+        if old.poll() is None:
+            old.terminate()
+            try:
+                old.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                old.kill()
+        _NATIVE_PROCESSES.pop(port, None)
+
+    address = "0.0.0.0" if expose_lan else "127.0.0.1"
+    command = _native_ros_command([
+        "launch",
+        "rosbridge_server",
+        "rosbridge_websocket_launch.xml",
+        f"address:={address}",
+        f"port:={port}",
+    ])
+    if command is None:
+        return None
+    # Inherit the deployment log streams so native ROS launch diagnostics are
+    # visible in the deployment instead of being reduced to a later timeout.
+    proc = subprocess.Popen(command)
+    _NATIVE_PROCESSES[port] = proc
+    deadline = time.monotonic() + max(10.0, timeout)
+    while time.monotonic() < deadline:
+        if _port_open(host, port):
+            visibility = "LAN-exposed" if expose_lan else "local-only"
+            return (
+                f"rosbridge ready at ws://{host}:{port} "
+                f"(native ROS 2 process {proc.pid}, {visibility})"
+            )
+        exit_code = proc.poll()
+        if exit_code is not None:
+            _NATIVE_PROCESSES.pop(port, None)
+            raise RuntimeError(
+                f"native rosbridge_server exited with code {exit_code}; "
+                "run `ros2 launch rosbridge_server rosbridge_websocket_launch.xml` "
+                "on the device to inspect its ROS setup"
+            )
+        time.sleep(0.25)
+    _stop_native_rosbridge(port)
+    raise RuntimeError(f"native rosbridge_server did not open port {port} before the timeout")
 
 
 def _start_docker_desktop(timeout: float) -> None:
@@ -96,6 +203,15 @@ def ensure_local_rosbridge(
     if _port_open(host, port):
         return f"rosbridge ready at ws://{host}:{port} (already running)"
 
+    native = _start_native_rosbridge(
+        host,
+        port,
+        timeout,
+        expose_lan=expose_lan,
+    )
+    if native is not None:
+        return native
+
     _start_docker_desktop(timeout)
     container = _container_name(port)
     publish_host = "0.0.0.0" if expose_lan else "127.0.0.1"
@@ -149,7 +265,7 @@ def ensure_local_rosbridge(
     name="ROS2RosbridgeServer", component="rosbridge",
     category="ROS 2",
     hidden=True,
-    description="Ensure a local rosbridge Docker service is running for one-click workflows.",
+    description="Ensure a local native ROS 2 rosbridge service is running, with a Docker fallback.",
     inputs={
         "action": Enum(["ensure", "check", "stop"], default="ensure"),
         "host": Text(default="127.0.0.1"),
@@ -169,6 +285,8 @@ def ros2_rosbridge_server(ctx: dict) -> dict:
         ready = _port_open(host, port)
         return {"ready": ready, "report": f"rosbridge {'ready' if ready else 'not reachable'} at ws://{host}:{port}"}
     if action == "stop":
+        if _stop_native_rosbridge(port):
+            return {"ready": False, "report": "native rosbridge stopped"}
         try:
             result = _run(["docker", "stop", _container_name(port)], 30)
             ok = result.returncode == 0

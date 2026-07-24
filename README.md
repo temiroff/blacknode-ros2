@@ -14,25 +14,24 @@ workflow editor: list topics and
 services, echo and publish messages, inspect interface definitions, and drive
 it all from workflows or AI agents over MCP.
 
-No ROS installation is required: if `ros2` isn't on your PATH, the package
-runs everything inside a Docker helper container (`ros:jazzy`), which works on
-Windows, macOS, and Linux. With a native/WSL ROS 2 install it talks to your
-real ROS graph directly.
+On Linux, Blacknode prefers the native ROS 2 installation and discovers
+standard `/opt/ros/<distro>/setup.bash` environments even when the runtime
+starts through systemd. Local rosbridge workflows launch
+`rosbridge_server` directly on that native graph. Docker remains an on-demand
+fallback for systems that use the `ros:jazzy` helper image.
 
 On Windows, if Docker is installed but Docker Desktop isn't running yet, the
 first ROS 2 node that needs it launches Docker Desktop and waits for the
-daemon before continuing. On a Blacknode Runtime Linux device,
-`./service.sh docker` installs and enables Docker Engine for the runtime user.
+daemon before continuing.
 
 ## Requirements
 
 - The [Blacknode](https://github.com/temiroff/Blacknode) main app
 - **One of:**
-  - Docker Desktop on Windows/macOS, or Docker Engine on Linux (the install
-    step pulls `ros:jazzy` automatically; Blacknode starts Docker Desktop on
-    Windows and Blacknode Runtime configures Docker Engine with
-    `./service.sh docker`), or
-  - a native ROS 2 installation with `ros2` on PATH
+  - a native ROS 2 installation; rosbridge workflows also use the matching
+    `ros-<distro>-rosbridge-server` package, or
+  - Docker Desktop on Windows/macOS, or Docker Engine on Linux, for the
+    on-demand `ros:jazzy` fallback
 
 Neither installed? The nodes still load and return structured "ROS 2 not
 available" results with setup instructions, so workflows stay viewable
@@ -46,9 +45,8 @@ From the Blacknode repo root:
 blacknode packages install git@github.com:temiroff/blacknode-ros2.git
 ```
 
-This clones the repo into `packages/` and pulls the `ros:jazzy` Docker image
-declared in the manifest. If you cloned by hand, install the prerequisites
-with:
+This clones the repo into `packages/`. If you cloned by hand, install the
+Python prerequisites with:
 
 ```bash
 blacknode packages setup blacknode-ros2
@@ -140,8 +138,8 @@ the source of synchronized correction episodes.
 ## Templates
 
 Loadable from the editor's Templates tab. Every template is self-contained:
-the leading check/status node starts Docker Desktop automatically on Windows
-or reuses the configured Linux Docker Engine/native ROS 2 service.
+the leading check/status node starts rosbridge on the native Linux ROS 2 graph
+or selects the configured fallback transport.
 
 One template per feature — no overlapping variants:
 
@@ -273,11 +271,11 @@ target would be, so `before`/`target` show real numbers and the report reads
 set `armed=true`. Only the read (a passive subscribe) happens while disarmed;
 the write (`stream_motion`) is what's actually gated.
 
-The automatic rosbridge path builds a small ROS Jazzy rosbridge image on first
-use and reuses the `blacknode-rosbridge` container afterward. On Windows it
-starts Docker Desktop when necessary. On a Blacknode Runtime Linux device,
-run `./service.sh docker` once; setup enables Docker at boot and grants the
-runtime service access to its socket.
+The automatic rosbridge path starts `rosbridge_server` from the native ROS 2
+installation when available. Install its package on Ubuntu with
+`sudo apt-get install ros-$ROS_DISTRO-rosbridge-server`. The fallback path
+builds a small ROS Jazzy image on first use and reuses the
+`blacknode-rosbridge` container afterward.
 
 | Input | Default | Meaning |
 |---|---|---|

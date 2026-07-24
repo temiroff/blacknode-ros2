@@ -220,6 +220,7 @@ def test_rosbridge_server_reuses_open_local_port(monkeypatch):
 
 def test_rosbridge_server_reports_missing_docker(monkeypatch):
     monkeypatch.setattr(service, "_port_open", lambda host, port: False)
+    monkeypatch.setattr(service, "_start_native_rosbridge", lambda *args, **kwargs: None)
     monkeypatch.setattr(service, "_start_docker_desktop", lambda timeout: (_ for _ in ()).throw(RuntimeError("install Docker Desktop")))
 
     result = _NODE_REGISTRY["ROS2RosbridgeServer"]({"action": "ensure"})
@@ -249,6 +250,7 @@ def test_rosbridge_server_reports_linux_docker_daemon_problem(monkeypatch):
 def test_rosbridge_image_build_allows_slow_arm_device(monkeypatch):
     port_checks = iter([False, True])
     monkeypatch.setattr(service, "_port_open", lambda host, port: next(port_checks))
+    monkeypatch.setattr(service, "_start_native_rosbridge", lambda *args, **kwargs: None)
     monkeypatch.setattr(service, "_start_docker_desktop", lambda timeout: None)
     calls = []
 
@@ -271,6 +273,60 @@ def test_rosbridge_image_build_allows_slow_arm_device(monkeypatch):
     build = next(call for call in calls if call[0][:2] == ["docker", "build"])
     assert build[1] >= 600
     assert "rosbridge ready" in report
+
+
+def test_rosbridge_prefers_native_ros_on_linux(monkeypatch):
+    port_checks = iter([False, True])
+    commands = []
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(service, "_port_open", lambda host, port: next(port_checks))
+    monkeypatch.setattr(service, "_native_ros_command", lambda args: ["/opt/ros/jazzy/bin/ros2", *args])
+    monkeypatch.setattr(
+        service,
+        "_run",
+        lambda command, timeout, **kwargs: subprocess.CompletedProcess(command, 0, stdout="/opt/ros/jazzy", stderr=""),
+    )
+    monkeypatch.setattr(
+        service.subprocess,
+        "Popen",
+        lambda command, **kwargs: commands.append(command) or FakeProcess(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_start_docker_desktop",
+        lambda timeout: pytest.fail("native ROS 2 must be preferred"),
+    )
+
+    report = service.ensure_local_rosbridge("127.0.0.1", 9091, 30)
+    service._NATIVE_PROCESSES.pop(9091, None)
+
+    assert "native ROS 2 process 4321" in report
+    assert commands[0][-2:] == ["address:=127.0.0.1", "port:=9091"]
+
+
+def test_native_ros_reports_missing_rosbridge_package(monkeypatch):
+    monkeypatch.setattr(service, "_native_ros_command", lambda args: ["/opt/ros/jazzy/bin/ros2", *args])
+    monkeypatch.setattr(service, "_native_ros_setup", lambda: Path("/opt/ros/jazzy/setup.bash"))
+    monkeypatch.setattr(
+        service,
+        "_run",
+        lambda command, timeout, **kwargs: subprocess.CompletedProcess(command, 1, stdout="", stderr="missing"),
+    )
+
+    with pytest.raises(RuntimeError, match="ros-jazzy-rosbridge-server"):
+        service._start_native_rosbridge("127.0.0.1", 9091, 30, expose_lan=False)
 
 
 def test_generic_status_prefers_native_when_rclpy_is_available(monkeypatch):

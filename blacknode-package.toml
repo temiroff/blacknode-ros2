@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-ros2"
-version = "0.5.1"
+version = "0.5.2"
 description = "ROS 2 graph, topic, service, process, native, and rosbridge integration primitives."
 requires-blacknode = ">=0.3.0"
 layer = "ros2"
@@ -19,7 +19,6 @@ module-root = true
 [components.core.dependencies]
 pip = ["PyYAML>=6", "roslibpy>=1.5", "numpy>=1.24", "pillow>=10"]
 imports = ["yaml", "roslibpy", "numpy", "PIL"]
-docker = ["ros:jazzy"]
 
 [components.rosbridge]
 description = "rosbridge websocket transport and server lifecycle."
