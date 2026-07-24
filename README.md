@@ -21,15 +21,17 @@ real ROS graph directly.
 
 On Windows, if Docker is installed but Docker Desktop isn't running yet, the
 first ROS 2 node that needs it launches Docker Desktop and waits for the
-daemon before continuing — no separate manual startup step.
+daemon before continuing. On a Blacknode Runtime Linux device,
+`./service.sh docker` installs and enables Docker Engine for the runtime user.
 
 ## Requirements
 
 - The [Blacknode](https://github.com/temiroff/Blacknode) main app
 - **One of:**
-  - Docker Desktop installed (the install step pulls `ros:jazzy`
-    automatically; Blacknode starts Docker Desktop itself if it isn't
-    already running), or
+  - Docker Desktop on Windows/macOS, or Docker Engine on Linux (the install
+    step pulls `ros:jazzy` automatically; Blacknode starts Docker Desktop on
+    Windows and Blacknode Runtime configures Docker Engine with
+    `./service.sh docker`), or
   - a native ROS 2 installation with `ros2` on PATH
 
 Neither installed? The nodes still load and return structured "ROS 2 not
@@ -138,9 +140,8 @@ the source of synchronized correction episodes.
 ## Templates
 
 Loadable from the editor's Templates tab. Every template is self-contained:
-the leading check/status node starts Docker Desktop automatically (or reuses
-native ROS 2) if it isn't already running, so nothing needs to be started on
-the side before pressing **Run**.
+the leading check/status node starts Docker Desktop automatically on Windows
+or reuses the configured Linux Docker Engine/native ROS 2 service.
 
 One template per feature — no overlapping variants:
 
@@ -272,10 +273,11 @@ target would be, so `before`/`target` show real numbers and the report reads
 set `armed=true`. Only the read (a passive subscribe) happens while disarmed;
 the write (`stream_motion`) is what's actually gated.
 
-On Windows, the automatic rosbridge path starts Docker Desktop when necessary,
-builds a small ROS Jazzy rosbridge image on first use, and reuses the
-`blacknode-rosbridge` container afterward. Docker Desktop must be installed,
-but the user does not need to choose or start rosbridge manually.
+The automatic rosbridge path builds a small ROS Jazzy rosbridge image on first
+use and reuses the `blacknode-rosbridge` container afterward. On Windows it
+starts Docker Desktop when necessary. On a Blacknode Runtime Linux device,
+run `./service.sh docker` once; setup enables Docker at boot and grants the
+runtime service access to its socket.
 
 | Input | Default | Meaning |
 |---|---|---|

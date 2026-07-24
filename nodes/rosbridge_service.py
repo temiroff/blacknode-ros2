@@ -1,7 +1,9 @@
-"""Manage a local rosbridge container for one-click Windows workflows."""
+"""Manage a local rosbridge container for one-click workflows."""
 from __future__ import annotations
 
 import os
+import platform
+import shutil
 import socket
 import subprocess
 import time
@@ -39,8 +41,29 @@ def _docker_ready() -> bool:
 
 
 def _start_docker_desktop(timeout: float) -> None:
+    """Ensure Docker is ready, launching Docker Desktop where supported.
+
+    The historical name is retained because extension tests and callers may
+    patch this helper.
+    """
     if _docker_ready():
         return
+    system = platform.system()
+    if system == "Linux":
+        if shutil.which("docker") is None:
+            raise RuntimeError(
+                "Docker Engine is not installed. In blacknode-runtime run "
+                "./service.sh docker (or ./setup-docker.sh), then restart the runtime."
+            )
+        raise RuntimeError(
+            "Docker Engine is installed but the daemon or socket is unavailable. "
+            "In blacknode-runtime run ./service.sh docker, then restart the runtime."
+        )
+    if system != "Windows":
+        raise RuntimeError(
+            "Docker is unavailable. Start a Docker-compatible daemon and confirm "
+            "'docker info' works for the Blacknode Runtime user."
+        )
     candidates = [
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Docker/Docker/Docker Desktop.exe",
         Path(os.environ.get("LOCALAPPDATA", "")) / "Docker/Docker Desktop.exe",
@@ -78,7 +101,18 @@ def ensure_local_rosbridge(
     publish_host = "0.0.0.0" if expose_lan else "127.0.0.1"
     image = _run(["docker", "image", "inspect", _IMAGE], 15)
     if image.returncode != 0:
-        built = _run(["docker", "build", "-t", _IMAGE, "-"], max(60.0, timeout), input=_DOCKERFILE)
+        build_timeout = max(600.0, timeout)
+        try:
+            built = _run(
+                ["docker", "build", "-t", _IMAGE, "-"],
+                build_timeout,
+                input=_DOCKERFILE,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"rosbridge image build exceeded {build_timeout:.0f} seconds; "
+                "check the device network and Docker logs, then retry"
+            ) from exc
         if built.returncode != 0:
             raise RuntimeError(f"could not build rosbridge image: {(built.stderr or built.stdout).strip()}")
 
@@ -115,7 +149,7 @@ def ensure_local_rosbridge(
     name="ROS2RosbridgeServer", component="rosbridge",
     category="ROS 2",
     hidden=True,
-    description="Ensure a local rosbridge Docker service is running, so Windows workflows need no separate startup command.",
+    description="Ensure a local rosbridge Docker service is running for one-click workflows.",
     inputs={
         "action": Enum(["ensure", "check", "stop"], default="ensure"),
         "host": Text(default="127.0.0.1"),

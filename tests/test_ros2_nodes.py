@@ -228,6 +228,51 @@ def test_rosbridge_server_reports_missing_docker(monkeypatch):
     assert "install Docker Desktop" in result["report"]
 
 
+def test_rosbridge_server_reports_linux_docker_setup_command(monkeypatch):
+    monkeypatch.setattr(service, "_docker_ready", lambda: False)
+    monkeypatch.setattr(service.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(service.shutil, "which", lambda command: None)
+
+    with pytest.raises(RuntimeError, match=r"\./service\.sh docker"):
+        service._start_docker_desktop(30)
+
+
+def test_rosbridge_server_reports_linux_docker_daemon_problem(monkeypatch):
+    monkeypatch.setattr(service, "_docker_ready", lambda: False)
+    monkeypatch.setattr(service.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(service.shutil, "which", lambda command: "/usr/bin/docker")
+
+    with pytest.raises(RuntimeError, match="daemon or socket"):
+        service._start_docker_desktop(30)
+
+
+def test_rosbridge_image_build_allows_slow_arm_device(monkeypatch):
+    port_checks = iter([False, True])
+    monkeypatch.setattr(service, "_port_open", lambda host, port: next(port_checks))
+    monkeypatch.setattr(service, "_start_docker_desktop", lambda timeout: None)
+    calls = []
+
+    def fake_run(command, timeout, **kwargs):
+        calls.append((command, timeout, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            1 if command[:3] in [
+                ["docker", "image", "inspect"],
+                ["docker", "container", "inspect"],
+            ] else 0,
+            stdout="container-id",
+            stderr="",
+        )
+
+    monkeypatch.setattr(service, "_run", fake_run)
+
+    report = service.ensure_local_rosbridge("127.0.0.1", 9091, 30)
+
+    build = next(call for call in calls if call[0][:2] == ["docker", "build"])
+    assert build[1] >= 600
+    assert "rosbridge ready" in report
+
+
 def test_generic_status_prefers_native_when_rclpy_is_available(monkeypatch):
     monkeypatch.setattr(nr, "available", lambda: (True, ""))
     monkeypatch.setattr(live, "ros2_native_status", lambda ctx: {
