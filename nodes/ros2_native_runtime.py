@@ -30,6 +30,7 @@ def _imports():
     global _IMPORT_ERROR
     try:
         import rclpy
+        from rclpy.executors import SingleThreadedExecutor
         from sensor_msgs.msg import JointState
         from std_msgs.msg import String
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -38,6 +39,7 @@ def _imports():
         return None
     return {
         "rclpy": rclpy,
+        "SingleThreadedExecutor": SingleThreadedExecutor,
         "JointState": JointState,
         "String": String,
         "QoSProfile": QoSProfile,
@@ -235,3 +237,186 @@ def stream_motion(
     finally:
         node.destroy_publisher(publisher)
         node.destroy_node()
+
+
+class NativeJointStream:
+    """Persistent native JointState subscription and command publisher."""
+
+    def __init__(
+        self,
+        state_topic: str,
+        command_topic: str,
+        config_topic: str = "",
+        *,
+        timeout: float = 10.0,
+    ):
+        del timeout  # Kept for transport-compatible construction.
+        imports = _ensure_rclpy()
+        self._rclpy = imports["rclpy"]
+        self._node = self._rclpy.create_node(
+            f"blacknode_native_joint_stream_{int(time.time() * 1000)}"
+        )
+        self._executor = imports["SingleThreadedExecutor"]()
+        self._executor.add_node(self._node)
+        self._JointState = imports["JointState"]
+        self._lock = threading.Condition()
+        self._pose: dict[str, float] = {}
+        self._config: dict[str, Any] = {}
+        self._pose_at = 0.0
+        self._closed = threading.Event()
+        self._resources_closed = False
+        self._state_sub = self._node.create_subscription(
+            self._JointState,
+            state_topic,
+            self._on_state,
+            10,
+        )
+        self._config_sub = None
+        if config_topic:
+            qos = imports["QoSProfile"](
+                depth=1,
+                reliability=imports["ReliabilityPolicy"].RELIABLE,
+                durability=imports["DurabilityPolicy"].TRANSIENT_LOCAL,
+            )
+            self._config_sub = self._node.create_subscription(
+                imports["String"],
+                config_topic,
+                self._on_config,
+                qos,
+            )
+        self._command_pub = self._node.create_publisher(
+            self._JointState,
+            command_topic,
+            10,
+        )
+        self._thread = threading.Thread(
+            target=self._spin,
+            name=f"blacknode-native-joints-{id(self):x}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _on_state(self, message: Any) -> None:
+        names = list(getattr(message, "name", []) or [])
+        positions = list(getattr(message, "position", []) or [])
+        pose = {
+            str(name): float(value)
+            for name, value in zip(names, positions)
+            if isinstance(value, (int, float)) and math.isfinite(value)
+        }
+        if not pose:
+            return
+        with self._lock:
+            self._pose = pose
+            self._pose_at = time.monotonic()
+            self._lock.notify_all()
+
+    def _on_config(self, message: Any) -> None:
+        try:
+            config = json.loads(getattr(message, "data", "") or "")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(config, dict):
+            return
+        with self._lock:
+            self._config = config
+            self._lock.notify_all()
+
+    def _spin(self) -> None:
+        while not self._closed.is_set():
+            try:
+                self._executor.spin_once(timeout_sec=0.05)
+            except Exception:
+                self._closed.set()
+                return
+
+    def snapshot(self) -> tuple[dict[str, float], dict[str, Any], float]:
+        with self._lock:
+            age = (
+                max(0.0, time.monotonic() - self._pose_at)
+                if self._pose_at
+                else float("inf")
+            )
+            return dict(self._pose), dict(self._config), age
+
+    def wait_for_pose(self, timeout: float) -> dict[str, float]:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            while not self._pose and not self._closed.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._lock.wait(remaining)
+            return dict(self._pose)
+
+    def wait_for_config(self, timeout: float) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            while not self._config and not self._closed.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._lock.wait(remaining)
+            return dict(self._config)
+
+    def publish(self, positions_radians: dict[str, float]) -> None:
+        names = list(positions_radians)
+        self._command_pub.publish(
+            _joint_command_message(
+                self._JointState,
+                self._node,
+                names,
+                positions_radians,
+            )
+        )
+
+    def close(self) -> None:
+        if self._resources_closed:
+            return
+        self._resources_closed = True
+        self._closed.set()
+        with self._lock:
+            self._lock.notify_all()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=1.0)
+        try:
+            self._executor.remove_node(self._node)
+            self._executor.shutdown(timeout_sec=1.0)
+        except Exception:
+            pass
+        for entity, destroy in (
+            (self._state_sub, self._node.destroy_subscription),
+            (self._config_sub, self._node.destroy_subscription),
+            (self._command_pub, self._node.destroy_publisher),
+        ):
+            if entity is not None:
+                try:
+                    destroy(entity)
+                except Exception:
+                    pass
+        self._node.destroy_node()
+
+
+def acquire_joint_stream(
+    state_topic: str,
+    command_topic: str,
+    config_topic: str = "",
+    *,
+    timeout: float = 10.0,
+) -> NativeJointStream:
+    return NativeJointStream(
+        state_topic,
+        command_topic,
+        config_topic,
+        timeout=timeout,
+    )
+
+
+def release_joint_stream(
+    session: NativeJointStream | None,
+    *,
+    discard: bool = False,
+) -> None:
+    del discard  # Native sessions are process-local and always close directly.
+    if session is not None:
+        session.close()

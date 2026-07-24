@@ -329,6 +329,94 @@ def test_native_ros_reports_missing_rosbridge_package(monkeypatch):
         service._start_native_rosbridge("127.0.0.1", 9091, 30, expose_lan=False)
 
 
+def test_native_joint_stream_tracks_pose_config_and_publishes(monkeypatch):
+    published = []
+
+    class FakeJointState:
+        def __init__(self):
+            self.header = SimpleNamespace(stamp=None)
+            self.name = []
+            self.position = []
+            self.velocity = []
+            self.effort = []
+
+    class FakePublisher:
+        def publish(self, message):
+            published.append(message)
+
+    class FakeNode:
+        def create_subscription(self, *args):
+            return object()
+
+        def create_publisher(self, *args):
+            return FakePublisher()
+
+        def destroy_subscription(self, entity):
+            return None
+
+        def destroy_publisher(self, entity):
+            return None
+
+        def destroy_node(self):
+            return None
+
+        def get_clock(self):
+            return SimpleNamespace(
+                now=lambda: SimpleNamespace(to_msg=lambda: "stamp"),
+            )
+
+    fake_node = FakeNode()
+    class FakeExecutor:
+        def add_node(self, node):
+            return None
+
+        def spin_once(self, timeout_sec=0):
+            time.sleep(min(timeout_sec, 0.001))
+
+        def remove_node(self, node):
+            return None
+
+        def shutdown(self, timeout_sec=0):
+            return None
+
+    fake_rclpy = SimpleNamespace(
+        create_node=lambda name: fake_node,
+    )
+    policy = SimpleNamespace(RELIABLE="reliable", TRANSIENT_LOCAL="transient")
+    monkeypatch.setattr(
+        nr,
+        "_ensure_rclpy",
+        lambda: {
+            "rclpy": fake_rclpy,
+            "SingleThreadedExecutor": FakeExecutor,
+            "JointState": FakeJointState,
+            "String": SimpleNamespace,
+            "QoSProfile": lambda **kwargs: kwargs,
+            "ReliabilityPolicy": policy,
+            "DurabilityPolicy": policy,
+        },
+    )
+
+    session = nr.acquire_joint_stream(
+        "/leader/joint_states",
+        "/leader/joint_commands",
+        "/leader/joint_config",
+    )
+    try:
+        session._on_state(SimpleNamespace(name=["joint_1"], position=[0.25]))
+        session._on_config(SimpleNamespace(data='{"torque_enabled": false}'))
+        pose, config, age = session.snapshot()
+        session.publish({"joint_1": 0.5})
+    finally:
+        nr.release_joint_stream(session)
+
+    assert pose == {"joint_1": 0.25}
+    assert config == {"torque_enabled": False}
+    assert age < 0.1
+    assert published[0].name == ["joint_1"]
+    assert published[0].position == [0.5]
+
+
 def test_generic_status_prefers_native_when_rclpy_is_available(monkeypatch):
     monkeypatch.setattr(nr, "available", lambda: (True, ""))
     monkeypatch.setattr(live, "ros2_native_status", lambda ctx: {

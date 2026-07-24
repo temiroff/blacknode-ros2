@@ -16,9 +16,10 @@ it all from workflows or AI agents over MCP.
 
 On Linux, Blacknode prefers the native ROS 2 installation and discovers
 standard `/opt/ros/<distro>/setup.bash` environments even when the runtime
-starts through systemd. Local rosbridge workflows launch
-`rosbridge_server` directly on that native graph. Docker remains an on-demand
-fallback for systems that use the `ros:jazzy` helper image.
+starts through systemd. Joint-state, command, manual-move, and leader/follower
+adapters use native `rclpy` directly. Rosbridge and Docker remain on-demand
+compatibility transports for systems that use WebSocket or the `ros:jazzy`
+helper image.
 
 On Windows, if Docker is installed but Docker Desktop isn't running yet, the
 first ROS 2 node that needs it launches Docker Desktop and waits for the
