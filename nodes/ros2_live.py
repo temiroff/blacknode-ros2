@@ -225,6 +225,7 @@ def ros2_native_status(ctx: dict) -> dict:
         "trigger": AnyPort,
         "transport": Enum(["auto", "native", "rosbridge"], default="auto"),
         "ensure_rosbridge": Bool(default=True),
+        "expose_lan": Bool(default=False),
         "host": Text(default="127.0.0.1"),
         "port": Int(default=9090),
         "state_topic": Text(default="/joint_states"),
@@ -246,6 +247,7 @@ def ros2_status(ctx: dict) -> dict:
             "action": "ensure",
             "host": ctx.get("host", "127.0.0.1"),
             "port": ctx.get("port", 9090),
+            "expose_lan": bool(ctx.get("expose_lan", False)),
             "timeout": max(30.0, float(ctx.get("timeout") or 10.0)),
         })
         if not server.get("ready"):

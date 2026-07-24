@@ -244,16 +244,31 @@ def test_generic_status_prefers_native_when_rclpy_is_available(monkeypatch):
 
 def test_generic_status_falls_back_to_rosbridge_and_ensures_service(monkeypatch):
     monkeypatch.setattr(nr, "available", lambda: (False, "missing rclpy"))
-    monkeypatch.setattr(service, "ros2_rosbridge_server", lambda ctx: {"ready": True, "report": "server ready"})
+    server_requests = []
+    monkeypatch.setattr(
+        service,
+        "ros2_rosbridge_server",
+        lambda ctx: server_requests.append(ctx) or {"ready": True, "report": "server ready"},
+    )
     monkeypatch.setattr(live, "ros2_rosbridge_status", lambda ctx: {
         "connected": True, "ready": True, "config": {}, "report": "bridge ready",
     })
 
-    result = _NODE_REGISTRY["ROS2Status"]({"transport": "auto", "ensure_rosbridge": True})
+    result = _NODE_REGISTRY["ROS2Status"]({
+        "transport": "auto",
+        "ensure_rosbridge": True,
+        "expose_lan": True,
+    })
 
     assert result["transport"] == "rosbridge"
     assert result["ready"] is True
     assert "bridge ready" in result["report"]
+    assert server_requests[0]["expose_lan"] is True
+
+
+def test_rosbridge_uses_a_distinct_container_for_the_leader_port():
+    assert service._container_name(9090) == "blacknode-rosbridge"
+    assert service._container_name(9091) == "blacknode-rosbridge-9091"
 
 
 def test_templates_validate():

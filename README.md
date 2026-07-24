@@ -237,6 +237,14 @@ Otherwise they use rosbridge; `ROS2Status` ensures the local rosbridge Docker
 service is ready before continuing. `transport=native` and
 `transport=rosbridge` remain available as advanced overrides.
 
+`ROS2Status` and `ROS2RosbridgeServer` also expose `expose_lan`. It defaults to
+`false`, which binds the Docker-published WebSocket to `127.0.0.1`. Set it to
+`true` only for an intentional trusted-LAN endpoint such as the split
+leader/follower template. Non-default ports receive distinct managed container
+names, so a leader bridge on `9091` can run beside the local bridge on `9090`.
+Rosbridge has no Blacknode pairing authentication; restrict its firewall rule
+to the follower computer or trusted robot subnet.
+
 For a sourced native ROS 2 workspace:
 
 ```bash

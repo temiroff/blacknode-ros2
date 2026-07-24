@@ -57,25 +57,42 @@ def _start_docker_desktop(timeout: float) -> None:
     raise RuntimeError("Docker Desktop did not become ready before the timeout")
 
 
-def ensure_local_rosbridge(host: str, port: int, timeout: float) -> str:
+def _container_name(port: int) -> str:
+    return _CONTAINER if port == 9090 else f"{_CONTAINER}-{port}"
+
+
+def ensure_local_rosbridge(
+    host: str,
+    port: int,
+    timeout: float,
+    *,
+    expose_lan: bool = False,
+) -> str:
     if host.lower() not in {"127.0.0.1", "localhost", "::1"}:
         raise RuntimeError("automatic rosbridge management only supports localhost")
     if _port_open(host, port):
         return f"rosbridge ready at ws://{host}:{port} (already running)"
 
     _start_docker_desktop(timeout)
+    container = _container_name(port)
+    publish_host = "0.0.0.0" if expose_lan else "127.0.0.1"
     image = _run(["docker", "image", "inspect", _IMAGE], 15)
     if image.returncode != 0:
         built = _run(["docker", "build", "-t", _IMAGE, "-"], max(60.0, timeout), input=_DOCKERFILE)
         if built.returncode != 0:
             raise RuntimeError(f"could not build rosbridge image: {(built.stderr or built.stdout).strip()}")
 
-    exists = _run(["docker", "container", "inspect", _CONTAINER], 15).returncode == 0
+    exists = _run(["docker", "container", "inspect", container], 15).returncode == 0
     if exists:
-        started = _run(["docker", "start", _CONTAINER], 30)
+        started = _run(["docker", "start", container], 30)
     else:
         started = _run(
-            ["docker", "run", "-d", "--name", _CONTAINER, "--restart", "unless-stopped", "-p", f"127.0.0.1:{port}:9090", _IMAGE],
+            [
+                "docker", "run", "-d", "--name", container,
+                "--restart", "unless-stopped",
+                "-p", f"{publish_host}:{port}:9090",
+                _IMAGE,
+            ],
             45,
         )
     if started.returncode != 0:
@@ -84,9 +101,13 @@ def ensure_local_rosbridge(host: str, port: int, timeout: float) -> str:
     deadline = time.monotonic() + max(10.0, timeout)
     while time.monotonic() < deadline:
         if _port_open(host, port):
-            return f"rosbridge ready at ws://{host}:{port} (Docker container {_CONTAINER})"
+            visibility = "LAN-exposed" if expose_lan else "local-only"
+            return (
+                f"rosbridge ready at ws://{host}:{port} "
+                f"(Docker container {container}, {visibility})"
+            )
         time.sleep(0.5)
-    logs = _run(["docker", "logs", "--tail", "20", _CONTAINER], 15)
+    logs = _run(["docker", "logs", "--tail", "20", container], 15)
     raise RuntimeError(f"rosbridge did not open port {port}: {(logs.stderr or logs.stdout).strip()}")
 
 
@@ -99,6 +120,7 @@ def ensure_local_rosbridge(host: str, port: int, timeout: float) -> str:
         "action": Enum(["ensure", "check", "stop"], default="ensure"),
         "host": Text(default="127.0.0.1"),
         "port": Int(default=9090),
+        "expose_lan": Bool(default=False),
         "timeout": Float(default=180.0),
     },
     outputs={"ready": Bool, "report": Text},
@@ -107,19 +129,25 @@ def ros2_rosbridge_server(ctx: dict) -> dict:
     action = str(ctx.get("action") or "ensure")
     host = str(ctx.get("host") or "127.0.0.1")
     port = int(ctx.get("port") or 9090)
+    expose_lan = bool(ctx.get("expose_lan", False))
     timeout = float(ctx.get("timeout") or 180.0)
     if action == "check":
         ready = _port_open(host, port)
         return {"ready": ready, "report": f"rosbridge {'ready' if ready else 'not reachable'} at ws://{host}:{port}"}
     if action == "stop":
         try:
-            result = _run(["docker", "stop", _CONTAINER], 30)
+            result = _run(["docker", "stop", _container_name(port)], 30)
             ok = result.returncode == 0
             return {"ready": False, "report": "rosbridge stopped" if ok else (result.stderr or result.stdout).strip()}
         except FileNotFoundError:
             return {"ready": False, "report": "Docker CLI not found"}
     try:
-        report = ensure_local_rosbridge(host, port, timeout)
+        report = ensure_local_rosbridge(
+            host,
+            port,
+            timeout,
+            expose_lan=expose_lan,
+        )
         return {"ready": True, "report": report}
     except Exception as exc:  # noqa: BLE001 - node reports actionable runtime failures
         return {"ready": False, "report": f"rosbridge startup FAILED: {type(exc).__name__}: {exc}"}
