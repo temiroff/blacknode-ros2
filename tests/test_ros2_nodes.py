@@ -80,7 +80,7 @@ EXPECTED_COMPONENT_NODES = {
     },
 }
 
-HAS_BACKEND = rt.detect_backend()["backend"] != "none"
+HAS_BACKEND = rt._passive_backend() != "none"
 backend_only = pytest.mark.skipif(not HAS_BACKEND, reason="no ros2 CLI and no Docker daemon")
 
 
@@ -537,6 +537,41 @@ def test_system_check_reports_unavailable(monkeypatch):
     assert r["backend"] == "none"
 
 
+def test_runtime_status_never_probes_or_starts_docker(monkeypatch):
+    monkeypatch.setattr(rt, "_cached_backend", None)
+    monkeypatch.setattr(rt.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(
+        rt,
+        "detect_backend",
+        lambda *args, **kwargs: pytest.fail("passive runtime status must not detect or start Docker"),
+    )
+    monkeypatch.setattr(
+        rt,
+        "_docker_ok",
+        lambda: pytest.fail("passive runtime status must not probe the Docker daemon"),
+    )
+
+    result = rt.runtime_status()
+
+    assert result["ok"] is True
+    assert result["backend"] == "none"
+
+
+def test_empty_stream_stop_never_probes_or_starts_docker(monkeypatch):
+    monkeypatch.setattr(rt, "_cached_backend", None)
+    monkeypatch.setattr(rt, "_streams", {})
+    monkeypatch.setattr(rt.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(
+        rt,
+        "detect_backend",
+        lambda *args, **kwargs: pytest.fail("empty stop must not detect or start Docker"),
+    )
+
+    result = rt.stop_image_stream("")
+
+    assert result == {"ok": True, "backend": "none", "stopped": 0}
+
+
 def test_detect_backend_launches_docker_desktop_when_daemon_is_down(monkeypatch):
     rt._cached_backend = None
     monkeypatch.setattr(rt.shutil, "which", lambda name: None if name == "ros2" else "/usr/bin/docker")
@@ -988,6 +1023,67 @@ def test_rosbridge_string_control_publish_waits_and_repeats(monkeypatch):
     assert result == {"ok": True, "sent": 3}
     assert len([event for event in events if event[0] == "publish"]) == 3
     assert events[-1] == ("unadvertise",)
+
+
+def test_rosbridge_motion_stream_publishes_controller_profile_samples(monkeypatch):
+    published = []
+
+    class FakeTopic:
+        def __init__(self, ros, topic, message_type):
+            pass
+
+        def advertise(self):
+            pass
+
+        def publish(self, message):
+            published.append(message)
+
+        def unadvertise(self):
+            pass
+
+    ros = SimpleNamespace(is_connected=True)
+    monkeypatch.setattr(rb, "get_connection", lambda *a, **k: ros)
+    monkeypatch.setattr(rb, "roslibpy", SimpleNamespace(Topic=FakeTopic, Message=lambda value: value))
+    monkeypatch.setattr(rb.time, "sleep", lambda seconds: None)
+
+    result = rb.stream_motion(
+        "127.0.0.1",
+        9090,
+        "/joint_commands",
+        ["joint"],
+        {"joint": 0.0},
+        {"joint": 1.0},
+        ramp_seconds=1.0,
+        hold_seconds=0.0,
+        rate_hz=10.0,
+        alphas=[0.0, 0.1, 0.4, 1.0],
+    )
+
+    assert result == {"ok": True, "sent": 4}
+    assert [message["position"][0] for message in published] == [0.0, 0.1, 0.4, 1.0]
+
+
+def test_rosbridge_motion_stream_rejects_unsafe_profile_samples(monkeypatch):
+    monkeypatch.setattr(rb, "get_connection", lambda *a, **k: SimpleNamespace(is_connected=True))
+
+    result = rb.stream_motion(
+        "127.0.0.1",
+        9090,
+        "/joint_commands",
+        ["joint"],
+        {"joint": 0.0},
+        {"joint": 1.0},
+        ramp_seconds=1.0,
+        hold_seconds=0.0,
+        rate_hz=10.0,
+        alphas=[0.0, 0.8, 0.6, 1.0],
+    )
+
+    assert result == {
+        "ok": False,
+        "sent": 0,
+        "error": "invalid normalized motion-profile samples",
+    }
 
 
 def test_joint_stream_seed_config_replaces_stale_torque_state():

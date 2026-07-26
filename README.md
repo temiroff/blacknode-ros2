@@ -23,7 +23,8 @@ helper image.
 
 On Windows, if Docker is installed but Docker Desktop isn't running yet, the
 first ROS 2 node that needs it launches Docker Desktop and waits for the
-daemon before continuing.
+daemon before continuing. Starting Blacknode, opening the editor, reading
+runtime status, and stopping an empty runtime do not probe or start Docker.
 
 ## Requirements
 
