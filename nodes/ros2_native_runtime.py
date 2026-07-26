@@ -204,6 +204,7 @@ def stream_motion(
     hold_seconds: float,
     rate_hz: float,
     timeout: float = 10.0,
+    alphas: list[float] | None = None,
 ) -> dict[str, Any]:
     imports, node = _create_node("blacknode_native_command")
     rclpy = imports["rclpy"]
@@ -219,10 +220,22 @@ def stream_motion(
 
         rate = max(1.0, float(rate_hz))
         period = 1.0 / rate
-        ramp_frames = max(1, int(max(0.0, ramp_seconds) * rate))
         hold_frames = max(0, int(max(0.0, hold_seconds) * rate))
-        for frame in range(ramp_frames + hold_frames + 1):
-            alpha = min(1.0, frame / ramp_frames)
+        if alphas is None:
+            ramp_frames = max(1, int(max(0.0, ramp_seconds) * rate))
+            ramp_alphas = [frame / ramp_frames for frame in range(ramp_frames + 1)]
+        else:
+            ramp_alphas = [float(alpha) for alpha in alphas]
+            if (
+                len(ramp_alphas) < 2
+                or not all(math.isfinite(alpha) for alpha in ramp_alphas)
+                or abs(ramp_alphas[0]) > 1e-9
+                or abs(ramp_alphas[-1] - 1.0) > 1e-9
+                or any(left > right for left, right in zip(ramp_alphas, ramp_alphas[1:]))
+                or any(alpha < 0.0 or alpha > 1.0 for alpha in ramp_alphas)
+            ):
+                return {"ok": False, "sent": 0, "error": "invalid normalized motion-profile samples"}
+        for alpha in ramp_alphas + [1.0] * hold_frames:
             pose = {
                 name: start_radians[name] + (target_radians[name] - start_radians[name]) * alpha
                 for name in names

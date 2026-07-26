@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +48,7 @@ _DOCKER_UNREACHABLE_HELP = (
 )
 
 _cached_backend: dict[str, str] | None = None
+_backend_detection_lock = threading.Lock()
 _detached: list[subprocess.Popen] = []
 _managed_detached: dict[str, subprocess.Popen] = {}
 _streams: dict[str, dict[str, Any]] = {}
@@ -95,7 +97,7 @@ def runtime_status() -> dict[str, Any]:
         policy_runs = []
     return {
         "ok": True,
-        "backend": detect_backend()["backend"],
+        "backend": _passive_backend(),
         "streams": live_streams,
         "managed_runs": live_runs,
         "detached_count": len(live_detached),
@@ -164,7 +166,7 @@ def stop_runtime_services() -> dict[str, Any]:
     }
     return {
         "ok": not errors,
-        "backend": detect_backend()["backend"],
+        "backend": _passive_backend(),
         "active_before": status_before,
         "stopped": stopped,
         "errors": errors,
@@ -189,23 +191,36 @@ def detect_backend(refresh: bool = False) -> dict[str, str]:
     global _cached_backend
     if _cached_backend is not None and not refresh:
         return _cached_backend
-    native = shutil.which("ros2")
-    if native:
-        distro = os.environ.get("ROS_DISTRO", "")
-        _cached_backend = {"backend": "native", "detail": f"{native}" + (f" ({distro})" if distro else "")}
-    elif shutil.which("docker"):
-        if not _docker_ok():
-            launch_error = ensure_docker_desktop()
-            if launch_error:
-                _cached_backend = {"backend": "none", "detail": launch_error}
-                return _cached_backend
-        if _docker_ok():
-            _cached_backend = {"backend": "docker", "detail": f"image {IMAGE}, container {CONTAINER}"}
+    # Backend discovery can launch Docker Desktop and wait for its engine.
+    # Serialize it so two explicit ROS actions cannot start or probe Docker at
+    # the same time. Passive editor status never enters this function.
+    with _backend_detection_lock:
+        if _cached_backend is not None and not refresh:
+            return _cached_backend
+        native = shutil.which("ros2")
+        if native:
+            distro = os.environ.get("ROS_DISTRO", "")
+            _cached_backend = {"backend": "native", "detail": f"{native}" + (f" ({distro})" if distro else "")}
+        elif shutil.which("docker"):
+            if not _docker_ok():
+                launch_error = ensure_docker_desktop()
+                if launch_error:
+                    _cached_backend = {"backend": "none", "detail": launch_error}
+                    return _cached_backend
+            if _docker_ok():
+                _cached_backend = {"backend": "docker", "detail": f"image {IMAGE}, container {CONTAINER}"}
+            else:
+                _cached_backend = {"backend": "none", "detail": _DOCKER_UNREACHABLE_HELP}
         else:
-            _cached_backend = {"backend": "none", "detail": _DOCKER_UNREACHABLE_HELP}
-    else:
-        _cached_backend = {"backend": "none", "detail": _NO_BACKEND_HELP}
+            _cached_backend = {"backend": "none", "detail": _NO_BACKEND_HELP}
     return _cached_backend
+
+
+def _passive_backend() -> str:
+    """Report known runtime state without probing or starting Docker."""
+    if _cached_backend is not None:
+        return _cached_backend["backend"]
+    return "native" if shutil.which("ros2") else "none"
 
 
 def _docker_ok() -> bool:
@@ -1025,4 +1040,4 @@ def stop_image_stream(stream_id: str = "") -> dict[str, Any]:
             killed = result.returncode in (0, 1)
         if _terminate_process(item["proc"]) or killed:
             stopped += 1
-    return {"ok": True, "backend": detect_backend()["backend"], "stopped": stopped}
+    return {"ok": True, "backend": _passive_backend(), "stopped": stopped}
