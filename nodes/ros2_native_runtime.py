@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import threading
 import time
 from importlib import metadata
@@ -74,10 +75,40 @@ def _ensure_rclpy():
     return imports
 
 
+def _safe_node_name(value: str, fallback: str) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9_]", "_", str(value or "").strip().strip("/"))
+    candidate = re.sub(r"_+", "_", candidate).strip("_")
+    if not candidate:
+        candidate = fallback
+    if candidate[0].isdigit():
+        candidate = f"blacknode_{candidate}"
+    return candidate
+
+
+def _create_rclpy_node(rclpy: Any, node_name: str):
+    """Create an internal node without unused parameter/introspection services."""
+    options = {
+        "enable_rosout": False,
+        "start_parameter_services": False,
+        "enable_type_description_service": False,
+    }
+    try:
+        return rclpy.create_node(node_name, **options)
+    except TypeError:
+        # ``enable_type_description_service`` was added after older supported
+        # ROS 2 releases. Preserve compatibility while still disabling the
+        # parameter services and rosout where those options are available.
+        options.pop("enable_type_description_service")
+        try:
+            return rclpy.create_node(node_name, **options)
+        except TypeError:
+            return rclpy.create_node(node_name)
+
+
 def _create_node(name: str):
     imports = _ensure_rclpy()
     node_name = f"{name}_{int(time.time() * 1000)}"
-    return imports, imports["rclpy"].create_node(node_name)
+    return imports, _create_rclpy_node(imports["rclpy"], node_name)
 
 
 def topic_names_and_types(timeout: float = 1.0) -> list[tuple[str, list[str]]]:
@@ -262,12 +293,17 @@ class NativeJointStream:
         config_topic: str = "",
         *,
         timeout: float = 10.0,
+        node_name: str = "",
     ):
         del timeout  # Kept for transport-compatible construction.
         imports = _ensure_rclpy()
         self._rclpy = imports["rclpy"]
-        self._node = self._rclpy.create_node(
-            f"blacknode_native_joint_stream_{int(time.time() * 1000)}"
+        self._node = _create_rclpy_node(
+            self._rclpy,
+            _safe_node_name(
+                node_name,
+                f"blacknode_native_joint_stream_{int(time.time() * 1000)}",
+            ),
         )
         self._executor = imports["SingleThreadedExecutor"]()
         self._executor.add_node(self._node)
@@ -297,10 +333,10 @@ class NativeJointStream:
                 self._on_config,
                 qos,
             )
-        self._command_pub = self._node.create_publisher(
-            self._JointState,
-            command_topic,
-            10,
+        self._command_pub = (
+            self._node.create_publisher(self._JointState, command_topic, 10)
+            if command_topic
+            else None
         )
         self._thread = threading.Thread(
             target=self._spin,
@@ -372,7 +408,14 @@ class NativeJointStream:
                 self._lock.wait(remaining)
             return dict(self._config)
 
+    def seed_config(self, config: dict[str, Any]) -> None:
+        with self._lock:
+            self._config = dict(config)
+            self._lock.notify_all()
+
     def publish(self, positions_radians: dict[str, float]) -> None:
+        if self._command_pub is None:
+            raise RuntimeError("joint stream is read-only")
         names = list(positions_radians)
         self._command_pub.publish(
             _joint_command_message(
@@ -413,12 +456,16 @@ class NativeJointStream:
 class NativeStringSubscription:
     """Persistent native std_msgs/String subscription with explicit cleanup."""
 
-    def __init__(self, topic: str, callback: Any):
+    def __init__(self, topic: str, callback: Any, *, node_name: str = ""):
         imports = _ensure_rclpy()
         self._rclpy = imports["rclpy"]
         self._callback = callback
-        self._node = self._rclpy.create_node(
-            f"blacknode_native_string_{time.time_ns()}_{id(self):x}"
+        self._node = _create_rclpy_node(
+            self._rclpy,
+            _safe_node_name(
+                node_name,
+                f"blacknode_native_string_{time.time_ns()}_{id(self):x}",
+            ),
         )
         self._executor = imports["SingleThreadedExecutor"]()
         self._executor.add_node(self._node)
@@ -472,8 +519,10 @@ class NativeStringSubscription:
 def acquire_string_subscription(
     topic: str,
     callback: Any,
+    *,
+    node_name: str = "",
 ) -> NativeStringSubscription:
-    return NativeStringSubscription(topic, callback)
+    return NativeStringSubscription(topic, callback, node_name=node_name)
 
 
 def release_string_subscription(
@@ -489,12 +538,14 @@ def acquire_joint_stream(
     config_topic: str = "",
     *,
     timeout: float = 10.0,
+    node_name: str = "",
 ) -> NativeJointStream:
     return NativeJointStream(
         state_topic,
         command_topic,
         config_topic,
         timeout=timeout,
+        node_name=node_name,
     )
 
 
