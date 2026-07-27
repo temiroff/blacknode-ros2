@@ -148,6 +148,56 @@ class JointStreamSession:
                 pass
 
 
+class StringSubscriptionSession:
+    """Persistent rosbridge std_msgs/String subscription."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        topic: str,
+        callback: Any,
+        timeout: float,
+    ) -> None:
+        self.ros = get_connection(host, port, timeout)
+        self._callback = callback
+        self._closed = False
+        self._topic = roslibpy.Topic(self.ros, topic, STRING_TYPE)
+        self._topic.subscribe(self._on_message)
+
+    def _on_message(self, message: dict) -> None:
+        try:
+            self._callback(str(message.get("data") or ""))
+        except Exception:
+            return
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._topic.unsubscribe()
+        except Exception:
+            pass
+
+
+def acquire_string_subscription(
+    host: str,
+    port: int,
+    topic: str,
+    callback: Any,
+    timeout: float = 10.0,
+) -> StringSubscriptionSession:
+    return StringSubscriptionSession(host, port, topic, callback, timeout)
+
+
+def release_string_subscription(
+    session: StringSubscriptionSession | None,
+) -> None:
+    if session is not None:
+        session.close()
+
+
 def acquire_joint_stream(
     host: str,
     port: int,

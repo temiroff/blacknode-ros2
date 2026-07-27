@@ -301,6 +301,11 @@ Leader-follower control applies the same recovery independently to the leader
 and follower streams. A stale shared subscription is replaced for every
 consumer so a restarted robot driver can resume live callbacks safely.
 
+Capability controllers can attach a managed `std_msgs/String` control
+subscription through the same native/rosbridge runtime contract. The
+subscription has an explicit close path and does not turn a one-shot node cook
+into a polling loop.
+
 `roslibpy` is installed by **Install prerequisites** in the Packages tab,
 `blacknode packages setup blacknode-ros2`, or `pip install roslibpy` **into the
 Blacknode server environment**. Without it the nodes load and return a
