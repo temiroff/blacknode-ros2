@@ -431,6 +431,53 @@ def test_generic_status_prefers_native_when_rclpy_is_available(monkeypatch):
     assert "auto-selected" in result["report"]
 
 
+def test_native_string_subscription_delivers_and_closes(monkeypatch):
+    received = []
+    destroyed = []
+
+    class FakeExecutor:
+        def add_node(self, node):
+            return None
+
+        def spin_once(self, timeout_sec=0):
+            time.sleep(min(timeout_sec, 0.001))
+
+        def remove_node(self, node):
+            return None
+
+        def shutdown(self, timeout_sec=0):
+            return None
+
+    class FakeNode:
+        def create_subscription(self, _message_type, _topic, callback, _qos):
+            self.callback = callback
+            return object()
+
+        def destroy_subscription(self, entity):
+            destroyed.append(entity)
+
+        def destroy_node(self):
+            return None
+
+    fake_node = FakeNode()
+    monkeypatch.setattr(
+        nr,
+        "_ensure_rclpy",
+        lambda: {
+            "rclpy": SimpleNamespace(create_node=lambda _name: fake_node),
+            "SingleThreadedExecutor": FakeExecutor,
+            "String": SimpleNamespace,
+        },
+    )
+
+    session = nr.acquire_string_subscription("/control", received.append)
+    fake_node.callback(SimpleNamespace(data='{"armed": true}'))
+    nr.release_string_subscription(session)
+
+    assert received == ['{"armed": true}']
+    assert len(destroyed) == 1
+
+
 def test_generic_status_falls_back_to_rosbridge_and_ensures_service(monkeypatch):
     monkeypatch.setattr(nr, "available", lambda: (False, "missing rclpy"))
     server_requests = []
@@ -1023,6 +1070,37 @@ def test_rosbridge_string_control_publish_waits_and_repeats(monkeypatch):
     assert result == {"ok": True, "sent": 3}
     assert len([event for event in events if event[0] == "publish"]) == 3
     assert events[-1] == ("unadvertise",)
+
+
+def test_rosbridge_string_subscription_delivers_and_closes(monkeypatch):
+    received = []
+    events = []
+
+    class FakeTopic:
+        def __init__(self, ros, topic, message_type):
+            events.append(("topic", topic, message_type))
+
+        def subscribe(self, callback):
+            self.callback = callback
+            events.append(("subscribe",))
+
+        def unsubscribe(self):
+            events.append(("unsubscribe",))
+
+    monkeypatch.setattr(rb, "get_connection", lambda *args, **kwargs: object())
+    monkeypatch.setattr(rb, "roslibpy", SimpleNamespace(Topic=FakeTopic))
+
+    session = rb.acquire_string_subscription(
+        "127.0.0.1",
+        9090,
+        "/control",
+        received.append,
+    )
+    session._topic.callback({"data": '{"armed": false}'})
+    rb.release_string_subscription(session)
+
+    assert received == ['{"armed": false}']
+    assert events[-1] == ("unsubscribe",)
 
 
 def test_rosbridge_motion_stream_publishes_controller_profile_samples(monkeypatch):

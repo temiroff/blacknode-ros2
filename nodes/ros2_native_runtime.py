@@ -410,6 +410,79 @@ class NativeJointStream:
         self._node.destroy_node()
 
 
+class NativeStringSubscription:
+    """Persistent native std_msgs/String subscription with explicit cleanup."""
+
+    def __init__(self, topic: str, callback: Any):
+        imports = _ensure_rclpy()
+        self._rclpy = imports["rclpy"]
+        self._callback = callback
+        self._node = self._rclpy.create_node(
+            f"blacknode_native_string_{time.time_ns()}_{id(self):x}"
+        )
+        self._executor = imports["SingleThreadedExecutor"]()
+        self._executor.add_node(self._node)
+        self._closed = threading.Event()
+        self._subscription = self._node.create_subscription(
+            imports["String"],
+            topic,
+            self._on_message,
+            10,
+        )
+        self._thread = threading.Thread(
+            target=self._spin,
+            name=f"blacknode-native-string-{id(self):x}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _on_message(self, message: Any) -> None:
+        try:
+            self._callback(str(getattr(message, "data", "") or ""))
+        except Exception:
+            # A control callback must not terminate the ROS executor thread.
+            return
+
+    def _spin(self) -> None:
+        while not self._closed.is_set():
+            try:
+                self._executor.spin_once(timeout_sec=0.05)
+            except Exception:
+                self._closed.set()
+                return
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=1.0)
+        try:
+            self._executor.remove_node(self._node)
+            self._executor.shutdown(timeout_sec=1.0)
+        except Exception:
+            pass
+        try:
+            self._node.destroy_subscription(self._subscription)
+        except Exception:
+            pass
+        self._node.destroy_node()
+
+
+def acquire_string_subscription(
+    topic: str,
+    callback: Any,
+) -> NativeStringSubscription:
+    return NativeStringSubscription(topic, callback)
+
+
+def release_string_subscription(
+    session: NativeStringSubscription | None,
+) -> None:
+    if session is not None:
+        session.close()
+
+
 def acquire_joint_stream(
     state_topic: str,
     command_topic: str,
