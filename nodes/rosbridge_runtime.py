@@ -45,7 +45,7 @@ _joint_streams: dict[tuple[str, int, str, str, str], "JointStreamSession"] = {}
 
 
 class JointStreamSession:
-    """Persistent JointState subscription and command publisher.
+    """Persistent JointState subscription with an optional command publisher.
 
     Continuous controllers use one of these sessions instead of subscribing,
     advertising, and tearing both entities down on every control tick.
@@ -71,12 +71,17 @@ class JointStreamSession:
         self._closed = False
         self._users = 0
         self._state_sub = roslibpy.Topic(self.ros, state_topic, JOINT_STATE_TYPE)
-        self._command_pub = roslibpy.Topic(self.ros, command_topic, JOINT_STATE_TYPE)
+        self._command_pub = (
+            roslibpy.Topic(self.ros, command_topic, JOINT_STATE_TYPE)
+            if command_topic
+            else None
+        )
         self._config_sub = roslibpy.Topic(self.ros, config_topic, STRING_TYPE) if config_topic else None
         self._state_sub.subscribe(self._on_state)
         if self._config_sub is not None:
             self._config_sub.subscribe(self._on_config)
-        self._command_pub.advertise()
+        if self._command_pub is not None:
+            self._command_pub.advertise()
 
     def _on_state(self, message: dict) -> None:
         names = message.get("name") or []
@@ -129,6 +134,8 @@ class JointStreamSession:
     def publish(self, positions_radians: dict[str, float]) -> None:
         if self._closed or not self.ros.is_connected:
             raise RuntimeError("rosbridge joint stream is disconnected")
+        if self._command_pub is None:
+            raise RuntimeError("joint stream is read-only")
         self._command_pub.publish(_joint_command_message(list(positions_radians), positions_radians))
 
     def close(self) -> None:

@@ -417,6 +417,84 @@ def test_native_joint_stream_tracks_pose_config_and_publishes(monkeypatch):
     assert published[0].position == [0.5]
 
 
+def test_native_read_only_joint_stream_has_semantic_name_and_no_command_publisher(monkeypatch):
+    created = []
+    publishers = []
+
+    class FakeNode:
+        def create_subscription(self, *args):
+            return object()
+
+        def create_publisher(self, *args):
+            publishers.append(args)
+            return object()
+
+        def destroy_subscription(self, entity):
+            return None
+
+        def destroy_publisher(self, entity):
+            return None
+
+        def destroy_node(self):
+            return None
+
+    class FakeExecutor:
+        def add_node(self, node):
+            return None
+
+        def spin_once(self, timeout_sec=0):
+            time.sleep(min(timeout_sec, 0.001))
+
+        def remove_node(self, node):
+            return None
+
+        def shutdown(self, timeout_sec=0):
+            return None
+
+    def create_node(name, **kwargs):
+        created.append((name, kwargs))
+        return FakeNode()
+
+    policy = SimpleNamespace(RELIABLE="reliable", TRANSIENT_LOCAL="transient")
+    monkeypatch.setattr(
+        nr,
+        "_ensure_rclpy",
+        lambda: {
+            "rclpy": SimpleNamespace(create_node=create_node),
+            "SingleThreadedExecutor": FakeExecutor,
+            "JointState": SimpleNamespace,
+            "String": SimpleNamespace,
+            "QoSProfile": lambda **kwargs: kwargs,
+            "ReliabilityPolicy": policy,
+            "DurabilityPolicy": policy,
+        },
+    )
+
+    session = nr.acquire_joint_stream(
+        "/leader/joint_states",
+        "",
+        "/leader/joint_config",
+        node_name="blacknode/leader monitor",
+    )
+    try:
+        session.seed_config({"torque_enabled": False})
+        assert session.snapshot()[1] == {"torque_enabled": False}
+        with pytest.raises(RuntimeError, match="read-only"):
+            session.publish({"joint_1": 0.5})
+    finally:
+        nr.release_joint_stream(session)
+
+    assert created == [(
+        "blacknode_leader_monitor",
+        {
+            "enable_rosout": False,
+            "start_parameter_services": False,
+            "enable_type_description_service": False,
+        },
+    )]
+    assert publishers == []
+
+
 def test_generic_status_prefers_native_when_rclpy_is_available(monkeypatch):
     monkeypatch.setattr(nr, "available", lambda: (True, ""))
     monkeypatch.setattr(live, "ros2_native_status", lambda ctx: {
@@ -1173,6 +1251,46 @@ def test_joint_stream_seed_config_replaces_stale_torque_state():
     session.seed_config({"torque_enabled": False, "mode": "teach"})
 
     assert session.wait_for_config(0) == {"torque_enabled": False, "mode": "teach"}
+
+
+def test_rosbridge_read_only_joint_stream_does_not_advertise_commands(monkeypatch):
+    events = []
+
+    class FakeTopic:
+        def __init__(self, ros, topic, message_type):
+            self.topic = topic
+            events.append(("topic", topic, message_type))
+
+        def subscribe(self, callback):
+            self.callback = callback
+            events.append(("subscribe", self.topic))
+
+        def unsubscribe(self):
+            events.append(("unsubscribe", self.topic))
+
+        def advertise(self):
+            events.append(("advertise", self.topic))
+
+        def unadvertise(self):
+            events.append(("unadvertise", self.topic))
+
+    ros = SimpleNamespace(is_connected=True)
+    monkeypatch.setattr(rb, "get_connection", lambda *args, **kwargs: ros)
+    monkeypatch.setattr(rb, "roslibpy", SimpleNamespace(Topic=FakeTopic))
+
+    session = rb.JointStreamSession(
+        "127.0.0.1",
+        9090,
+        "/leader/joint_states",
+        "",
+        "/leader/joint_config",
+        1.0,
+    )
+
+    assert session._command_pub is None
+    assert not any(event[0] == "advertise" for event in events)
+    with pytest.raises(RuntimeError, match="read-only"):
+        session.publish({"joint": 0.5})
 
 
 def test_joint_stream_release_retains_idle_subscription_until_explicit_stop(monkeypatch):
