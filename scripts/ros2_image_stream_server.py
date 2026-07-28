@@ -77,6 +77,34 @@ def _raw_image_to_pil(msg: Image) -> PILImage.Image:
         "8uc4": 4,
     }
     channels = channels_by_encoding.get(encoding)
+    if channels is None and encoding in {"mono16", "16uc1", "32fc1"}:
+        bytes_per_pixel = 4 if encoding == "32fc1" else 2
+        step = int(msg.step or width * bytes_per_pixel)
+        raw = bytes(msg.data)
+        required = height * step
+        if len(raw) < required:
+            raise ValueError(
+                f"image data too short: {len(raw)} bytes, expected {required}"
+            )
+        dtype = np.dtype(
+            (">f4" if bool(msg.is_bigendian) else "<f4")
+            if encoding == "32fc1"
+            else (">u2" if bool(msg.is_bigendian) else "<u2")
+        )
+        rows = np.frombuffer(raw[:required], dtype=np.uint8).reshape((height, step))
+        packed = rows[:, : width * bytes_per_pixel].copy()
+        depth = packed.view(dtype).reshape((height, width)).astype(np.float32)
+        valid = np.isfinite(depth) & (depth > 0)
+        if not np.any(valid):
+            return PILImage.fromarray(np.zeros((height, width), dtype=np.uint8))
+        near, far = np.percentile(depth[valid], [2.0, 98.0])
+        if far <= near:
+            far = near + 1.0
+        normalized = np.clip((depth - near) / (far - near), 0.0, 1.0)
+        preview = np.where(valid, (1.0 - normalized) * 255.0, 0.0).astype(
+            np.uint8
+        )
+        return PILImage.fromarray(preview)
     if channels is None:
         raise ValueError(f"unsupported encoding {encoding!r}")
 
