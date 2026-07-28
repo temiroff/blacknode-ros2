@@ -66,6 +66,7 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2TopicEcho` | Read N messages from a topic, bounded by a timeout |
 | `ROS2TopicPublish` | Publish a bounded number of messages to a topic |
 | `ROS2TopicPublisher` | Start or stop a managed continuous topic publisher |
+| `ROS2TopicRelay` | Continuously subscribe to one typed data topic and republish unchanged messages on another topic |
 | `ROS2Launch` | Start/stop a background `ros2 launch ...` process |
 | `ROS2Run` | Start/stop a background `ros2 run <package> <executable> ...` process |
 | `ROS2NodeList` | List running ROS nodes |
@@ -148,6 +149,7 @@ One template per feature — no overlapping variants:
 | Template | Feature it shows |
 |---|---|
 | **Publish & Subscribe Messages** | Messaging. Publishes on `/blacknode_demo`, subscribes and reads one back, lists the live graph, and draws a PASS/FAIL dashboard. |
+| **Relay Any ROS 2 Data Topic** | Data routing. Continuously subscribes to a configurable source topic and republishes the same typed messages on a configurable destination topic. |
 | **Run Your Own ROS 2 Package** | Process control. `ros2 launch` your own package, then confirm which topics and nodes appeared. |
 | **Connect to a Robot Over WiFi** | Remote transport. Reaches a robot running `rosbridge_server` at `ROBOT_IP` over a WebSocket: check, read a topic, publish back. |
 
@@ -174,6 +176,14 @@ or run:
 ```bash
 docker exec blacknode-ros2 pkill -f "ros2 topic pub"
 ```
+
+`ROS2TopicRelay` is for data topics such as camera metadata, IMU, LiDAR,
+battery, diagnostics, and application events. It preserves the ROS message
+type and offers reliable or sensor-data QoS. Known motion destinations such as
+`/cmd_vel`, joint-command, servo-command, robot-control, and trajectory topics
+are rejected. Use the matching Blacknode controller for motion so explicit
+arming, calibration limits, source freshness, and shutdown behavior remain
+enforced.
 
 ## Backend details
 

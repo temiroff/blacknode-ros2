@@ -1,0 +1,185 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Relay Any ROS 2 Data Topic",
+  "saved_at": "2026-07-27T00:00:00",
+  "entrypoint": {
+    "node_id": "received",
+    "port": "value"
+  },
+  "metadata": {
+    "template": true,
+    "description": "A generic, deployable ROS 2 data path. The source publisher writes a typed message to /blacknode/source, the relay subscribes and republishes the unchanged message on /blacknode/relayed, and the subscriber reads it back. Change both topic names and the message type to route camera metadata, IMU, LiDAR, battery, or other non-motion data. Motion command topics are intentionally blocked; use a safety-gated controller for robot movement.",
+    "color": "#2e9fe6",
+    "required_packages": ["blacknode-ros2"],
+    "required_components": [
+      "blacknode-ros2/core",
+      "blacknode-ros2/topics"
+    ]
+  },
+  "node_meta": {
+    "source_publisher": {
+      "id": "source_publisher",
+      "type": "ROS2TopicPublisher",
+      "params": {
+        "action": "start",
+        "topic": "/blacknode/source",
+        "msg_type": "std_msgs/msg/String",
+        "payload": "data: generic ROS 2 relay works",
+        "rate_hz": 5.0
+      },
+      "pos": [40, 180],
+      "inputs": ["trigger", "action", "topic", "msg_type", "payload", "rate_hz"],
+      "outputs": ["running", "backend", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "topic": "Text",
+        "msg_type": "Text",
+        "payload": "Text",
+        "rate_hz": "Float"
+      },
+      "output_types": {
+        "running": "Bool",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "topic": "/blacknode/source",
+        "msg_type": "std_msgs/msg/String",
+        "payload": "data: generic ROS 2 relay works",
+        "rate_hz": 5.0
+      },
+      "input_choices": {
+        "action": ["start", "stop"]
+      }
+    },
+    "topic_relay": {
+      "id": "topic_relay",
+      "type": "ROS2TopicRelay",
+      "params": {
+        "action": "start",
+        "run_id": "generic_data_relay",
+        "source_topic": "/blacknode/source",
+        "destination_topic": "/blacknode/relayed",
+        "msg_type": "std_msgs/msg/String",
+        "qos": "reliable",
+        "queue_depth": 10
+      },
+      "pos": [420, 180],
+      "inputs": [
+        "trigger",
+        "action",
+        "run_id",
+        "source_topic",
+        "destination_topic",
+        "msg_type",
+        "qos",
+        "queue_depth"
+      ],
+      "outputs": [
+        "running",
+        "backend",
+        "source_topic",
+        "destination_topic",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "run_id": "Text",
+        "source_topic": "Text",
+        "destination_topic": "Text",
+        "msg_type": "Text",
+        "qos": "Text",
+        "queue_depth": "Int"
+      },
+      "output_types": {
+        "running": "Bool",
+        "backend": "Text",
+        "source_topic": "Text",
+        "destination_topic": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "start",
+        "run_id": "generic_data_relay",
+        "source_topic": "/blacknode/source",
+        "destination_topic": "/blacknode/relayed",
+        "msg_type": "std_msgs/msg/String",
+        "qos": "reliable",
+        "queue_depth": 10
+      },
+      "input_choices": {
+        "action": ["start", "stop"],
+        "qos": ["sensor_data", "reliable"]
+      }
+    },
+    "destination_subscriber": {
+      "id": "destination_subscriber",
+      "type": "ROS2TopicEcho",
+      "params": {
+        "topic": "/blacknode/relayed",
+        "msg_type": "std_msgs/msg/String",
+        "count": 1,
+        "timeout": 20.0
+      },
+      "pos": [820, 180],
+      "inputs": ["trigger", "topic", "msg_type", "count", "timeout"],
+      "outputs": ["messages", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "topic": "Text",
+        "msg_type": "Text",
+        "count": "Int",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "messages": "List",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "topic": "/blacknode/relayed",
+        "msg_type": "std_msgs/msg/String",
+        "count": 1,
+        "timeout": 20.0
+      }
+    },
+    "received": {
+      "id": "received",
+      "type": "Output",
+      "params": {
+        "label": "relayed ROS 2 message"
+      },
+      "pos": [1160, 180],
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {
+        "value": "Any"
+      },
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {
+      "from": "source_publisher",
+      "from_port": "report",
+      "to": "topic_relay",
+      "to_port": "trigger"
+    },
+    {
+      "from": "topic_relay",
+      "from_port": "report",
+      "to": "destination_subscriber",
+      "to_port": "trigger"
+    },
+    {
+      "from": "destination_subscriber",
+      "from_port": "messages",
+      "to": "received",
+      "to_port": "value"
+    }
+  ]
+}

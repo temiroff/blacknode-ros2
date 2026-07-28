@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import signal
 import shlex
 import shutil
@@ -36,6 +37,7 @@ CONTAINER = os.environ.get("BLACKNODE_ROS2_CONTAINER", "blacknode-ros2")
 STREAM_PORT_RANGE = os.environ.get("BLACKNODE_ROS2_STREAM_PORT_RANGE", "39000-39049")
 _CONTAINER_STREAM_SCRIPT = "/tmp/blacknode_ros2_image_stream_server.py"
 _CONTAINER_SNAPSHOT_SCRIPT = "/tmp/blacknode_ros2_image_snapshot.py"
+_CONTAINER_TOPIC_RELAY_SCRIPT = "/tmp/blacknode_ros2_topic_relay.py"
 
 _NO_BACKEND_HELP = (
     "ROS 2 is not available: no `ros2` on PATH and Docker is not installed. "
@@ -51,6 +53,7 @@ _cached_backend: dict[str, str] | None = None
 _backend_detection_lock = threading.Lock()
 _detached: list[subprocess.Popen] = []
 _managed_detached: dict[str, subprocess.Popen] = {}
+_managed_docker_patterns: dict[str, str] = {}
 _streams: dict[str, dict[str, Any]] = {}
 
 
@@ -77,6 +80,10 @@ def runtime_status() -> dict[str, Any]:
             live_runs.append({"run_id": run_id, "pid": proc.pid})
         else:
             _managed_detached.pop(run_id, None)
+    live_runs.extend(
+        {"run_id": run_id, "backend": "docker"}
+        for run_id in sorted(_managed_docker_patterns)
+    )
 
     live_detached = [proc for proc in _detached if proc.poll() is None]
     _detached[:] = live_detached
@@ -133,7 +140,7 @@ def stop_runtime_services() -> dict[str, Any]:
 
     managed_stopped = 0
     managed_errors: list[str] = []
-    for run_id in list(_managed_detached):
+    for run_id in sorted(set(_managed_detached) | set(_managed_docker_patterns)):
         result = stop_ros2_managed(run_id)
         if result.get("ok"):
             managed_stopped += int(result.get("stopped") or 0)
@@ -547,6 +554,9 @@ def run_ros2_managed(key: str, args: list[str]) -> dict[str, Any]:
         proc = _run(["docker", "exec", "-d", CONTAINER, "bash", "-lc", shell], 30)
         if proc.returncode != 0:
             return {"ok": False, "backend": backend, "error": proc.stderr.strip() or "docker exec failed"}
+        _managed_docker_patterns[key] = re.escape(
+            "ros2 " + shlex.join(args)
+        )
         return {"ok": True, "backend": backend}
     except Exception as exc:
         return {"ok": False, "backend": backend, "error": str(exc)}
@@ -557,6 +567,8 @@ def stop_ros2_managed(key: str, pattern: str = "") -> dict[str, Any]:
     backend = detect_backend()["backend"]
     stopped = 0
     proc = _managed_detached.pop(key, None)
+    docker_pattern = _managed_docker_patterns.pop(key, "")
+    pattern = pattern or docker_pattern
     if proc is not None and _terminate_process(proc):
         stopped += 1
     if backend == "native" and pattern and shutil.which("pkill"):
@@ -570,6 +582,133 @@ def stop_ros2_managed(key: str, pattern: str = "") -> dict[str, Any]:
             return {"ok": False, "backend": backend, "stopped": stopped, "error": result.stderr.strip() or "pkill failed"}
         stopped += 1 if result.returncode == 0 else 0
     return {"ok": True, "backend": backend, "stopped": stopped}
+
+
+def _topic_relay_script() -> Path:
+    return Path(__file__).resolve().parents[1] / "scripts" / "ros2_topic_relay.py"
+
+
+def start_topic_relay(
+    *,
+    run_id: str,
+    source_topic: str,
+    destination_topic: str,
+    message_type: str,
+    qos: str,
+    queue_depth: int,
+) -> dict[str, Any]:
+    """Start one managed, type-preserving ROS 2 data-topic relay."""
+    backend = detect_backend()["backend"]
+    if backend == "none":
+        return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
+    script = _topic_relay_script()
+    if not script.exists():
+        return {
+            "ok": False,
+            "backend": backend,
+            "error": f"topic relay helper not found: {script}",
+        }
+
+    interface = run_ros2(["interface", "show", message_type], timeout=15)
+    if not interface.get("ok"):
+        return {
+            "ok": False,
+            "backend": backend,
+            "error": (
+                f"ROS 2 message type '{message_type}' is unavailable: "
+                f"{interface.get('error') or interface.get('stderr') or 'interface lookup failed'}"
+            ),
+        }
+
+    key = f"topic-relay:{run_id}"
+    stop_topic_relay(run_id)
+    helper_args = [
+        "--run-id", run_id,
+        "--source-topic", source_topic,
+        "--destination-topic", destination_topic,
+        "--message-type", message_type,
+        "--qos", qos,
+        "--queue-depth", str(max(1, int(queue_depth))),
+    ]
+    if backend == "docker":
+        error = ensure_container() or _copy_to_container(
+            script,
+            _CONTAINER_TOPIC_RELAY_SCRIPT,
+        )
+        if error:
+            return {"ok": False, "backend": backend, "error": error}
+        shell = (
+            "source /opt/ros/$ROS_DISTRO/setup.bash && "
+            f"exec python3 {_CONTAINER_TOPIC_RELAY_SCRIPT} {shlex.join(helper_args)}"
+        )
+        started = _run(
+            ["docker", "exec", "-d", CONTAINER, "bash", "-lc", shell],
+            30,
+        )
+        if started.returncode != 0:
+            return {
+                "ok": False,
+                "backend": backend,
+                "error": started.stderr.strip() or "docker exec failed",
+            }
+        _managed_docker_patterns[key] = (
+            r"ros2_topic_relay\.py .*--run-id "
+            + re.escape(run_id)
+        )
+    else:
+        try:
+            process = subprocess.Popen(
+                [sys.executable, str(script), *helper_args],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "backend": backend,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        _managed_detached[key] = process
+
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        process = _managed_detached.get(key)
+        if process is not None and process.poll() is not None:
+            _managed_detached.pop(key, None)
+            return {
+                "ok": False,
+                "backend": backend,
+                "error": "topic relay helper exited before its publisher appeared",
+            }
+        topics = run_ros2(["topic", "list"], timeout=10)
+        if topics.get("ok") and destination_topic in topics.get("stdout", "").split():
+            return {
+                "ok": True,
+                "backend": backend,
+                "run_id": run_id,
+                "source_topic": source_topic,
+                "destination_topic": destination_topic,
+                "message_type": message_type,
+            }
+        time.sleep(0.25)
+    stop_topic_relay(run_id)
+    return {
+        "ok": False,
+        "backend": backend,
+        "error": (
+            f"topic relay started, but {destination_topic} did not become "
+            "discoverable within 15 seconds"
+        ),
+    }
+
+
+def stop_topic_relay(run_id: str) -> dict[str, Any]:
+    clean_run_id = str(run_id or "default").strip() or "default"
+    return stop_ros2_managed(
+        f"topic-relay:{clean_run_id}",
+        pattern=f"ros2_topic_relay.py .*--run-id {clean_run_id}",
+    )
 
 
 def _free_port(host: str) -> int:

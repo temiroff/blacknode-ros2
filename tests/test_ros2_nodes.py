@@ -52,6 +52,7 @@ EXPECTED_NODES = [
     "ROS2TopicList",
     "ROS2TopicPublish",
     "ROS2TopicPublisher",
+    "ROS2TopicRelay",
     "ROS2VisualDashboard",
 ]
 
@@ -68,6 +69,7 @@ EXPECTED_COMPONENT_NODES = {
         "ROS2TopicList",
         "ROS2TopicPublish",
         "ROS2TopicPublisher",
+        "ROS2TopicRelay",
     },
     "services": {"ROS2ServiceList"},
     "processes": {"ROS2Launch", "ROS2PackageExecutables", "ROS2Run"},
@@ -192,6 +194,19 @@ def test_topic_publisher_has_generic_contract():
     assert publisher._bn_outputs == ["running", "backend", "report"]
     assert publisher._bn_hidden is False
     assert _NODE_REGISTRY["ROS2VisualDashboard"]._bn_hidden is True
+
+
+def test_topic_relay_has_generic_data_contract():
+    relay = _NODE_REGISTRY["ROS2TopicRelay"]
+
+    assert relay._bn_inputs == [
+        "trigger", "action", "run_id", "source_topic", "destination_topic",
+        "msg_type", "qos", "queue_depth",
+    ]
+    assert relay._bn_outputs == [
+        "running", "backend", "source_topic", "destination_topic", "report",
+    ]
+    assert relay._bn_hidden is False
 
 
 def test_capability_nodes_are_not_owned_by_the_integration_layer():
@@ -603,13 +618,17 @@ def test_templates_declare_exact_component_requirements():
             "blacknode-ros2/services",
             "blacknode-ros2/diagnostics",
         },
-        "ros2-run-your-package.json": {
-            "blacknode-ros2/core",
-            "blacknode-ros2/topics",
-            "blacknode-ros2/processes",
-            "blacknode-ros2/diagnostics",
-        },
-    }
+            "ros2-run-your-package.json": {
+                "blacknode-ros2/core",
+                "blacknode-ros2/topics",
+                "blacknode-ros2/processes",
+                "blacknode-ros2/diagnostics",
+            },
+            "ros2-topic-relay.json": {
+                "blacknode-ros2/core",
+                "blacknode-ros2/topics",
+            },
+        }
     for path in sorted(TEMPLATE_DIR.glob("*.json")):
         workflow = json.loads(path.read_text(encoding="utf-8"))
         assert set(workflow["metadata"]["required_components"]) == expected[path.name]
@@ -642,6 +661,14 @@ def test_no_backend_is_structured_error(monkeypatch):
     assert "FAILED" in r["report"]
 
     r = _NODE_REGISTRY["ROS2TopicPublisher"]({"action": "start"})
+    assert r["running"] is False
+    assert r["backend"] == "none"
+    assert "FAILED" in r["report"]
+
+    r = _NODE_REGISTRY["ROS2TopicRelay"]({
+        "source_topic": "/source",
+        "destination_topic": "/destination",
+    })
     assert r["running"] is False
     assert r["backend"] == "none"
     assert "FAILED" in r["report"]
@@ -847,6 +874,95 @@ def test_topic_publisher_rejects_invalid_rate_without_starting(monkeypatch):
 
     assert result["running"] is False
     assert "rate_hz must be greater than 0" in result["report"]
+
+
+def test_topic_relay_starts_type_preserving_managed_service(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        rt,
+        "detect_backend",
+        lambda refresh=False: {"backend": "native", "detail": "test"},
+    )
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "backend": "native"}
+
+    monkeypatch.setattr(rt, "start_topic_relay", fake_start)
+
+    result = _NODE_REGISTRY["ROS2TopicRelay"]({
+        "run_id": "front lidar",
+        "source_topic": "/scan_raw",
+        "destination_topic": "/robot/front_scan",
+        "msg_type": "sensor_msgs/msg/LaserScan",
+        "qos": "sensor_data",
+        "queue_depth": 5,
+    })
+
+    assert captured == {
+        "run_id": "front_lidar",
+        "source_topic": "/scan_raw",
+        "destination_topic": "/robot/front_scan",
+        "message_type": "sensor_msgs/msg/LaserScan",
+        "qos": "sensor_data",
+        "queue_depth": 5,
+    }
+    assert result["running"] is True
+    assert "relaying /scan_raw -> /robot/front_scan" in result["report"]
+
+
+@pytest.mark.parametrize(
+    "destination",
+    ["/cmd_vel", "/follower/joint_commands", "/arm/trajectory"],
+)
+def test_topic_relay_blocks_motion_destinations(monkeypatch, destination):
+    monkeypatch.setattr(
+        rt,
+        "detect_backend",
+        lambda refresh=False: {"backend": "native", "detail": "test"},
+    )
+    monkeypatch.setattr(
+        rt,
+        "start_topic_relay",
+        lambda **kwargs: pytest.fail("motion destination must not start a generic relay"),
+    )
+
+    result = _NODE_REGISTRY["ROS2TopicRelay"]({
+        "source_topic": "/leader/joint_states",
+        "destination_topic": destination,
+        "msg_type": "sensor_msgs/msg/JointState",
+    })
+
+    assert result["running"] is False
+    assert "BLOCKED" in result["report"]
+    assert "safety-gated" in result["report"]
+
+
+def test_topic_relay_stop_is_scoped_to_run_id(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        rt,
+        "detect_backend",
+        lambda refresh=False: {"backend": "docker", "detail": "test"},
+    )
+    monkeypatch.setattr(
+        rt,
+        "stop_topic_relay",
+        lambda run_id: captured.append(run_id) or {
+            "ok": True,
+            "backend": "docker",
+            "stopped": 1,
+        },
+    )
+
+    result = _NODE_REGISTRY["ROS2TopicRelay"]({
+        "action": "stop",
+        "run_id": "front lidar",
+    })
+
+    assert captured == ["front_lidar"]
+    assert result["running"] is False
+    assert result["backend"] == "docker"
 
 
 def test_launch_builds_ros2_launch_command(monkeypatch):
@@ -1394,6 +1510,44 @@ def test_publish_then_echo_roundtrip():
         assert any("/bn_test" in t for t in topics["topics"]), topics
     finally:
         _NODE_REGISTRY["ROS2TopicPublisher"]({"action": "stop", "topic": "/bn_test"})
+
+
+@backend_only
+def test_topic_relay_roundtrip_live():
+    publisher = _NODE_REGISTRY["ROS2TopicPublisher"]({
+        "action": "start",
+        "topic": "/bn_relay_source",
+        "payload": "data: relayed",
+        "rate_hz": 5.0,
+    })
+    assert publisher["running"] is True, publisher["report"]
+    relay = _NODE_REGISTRY["ROS2TopicRelay"]({
+        "action": "start",
+        "run_id": "bn_relay_test",
+        "source_topic": "/bn_relay_source",
+        "destination_topic": "/bn_relay_destination",
+        "msg_type": "std_msgs/msg/String",
+        "qos": "reliable",
+    })
+    assert relay["running"] is True, relay["report"]
+    try:
+        result = _NODE_REGISTRY["ROS2TopicEcho"]({
+            "topic": "/bn_relay_destination",
+            "msg_type": "std_msgs/msg/String",
+            "count": 1,
+            "timeout": 30.0,
+        })
+        assert result["messages"], result["report"]
+        assert "relayed" in result["messages"][0]
+    finally:
+        _NODE_REGISTRY["ROS2TopicRelay"]({
+            "action": "stop",
+            "run_id": "bn_relay_test",
+        })
+        _NODE_REGISTRY["ROS2TopicPublisher"]({
+            "action": "stop",
+            "topic": "/bn_relay_source",
+        })
 
 
 @backend_only
