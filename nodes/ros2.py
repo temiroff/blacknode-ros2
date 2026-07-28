@@ -32,6 +32,14 @@ def _report(result: dict[str, Any], action: str) -> str:
     return f"{action} FAILED: {result.get('error', 'unknown error')}"
 
 
+def _managed_id(value: Any, fallback: str) -> str:
+    return (
+        re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or fallback).strip())
+        .strip("_")[:64]
+        or fallback
+    )
+
+
 @node(
     name="ROS2SystemCheck", component="diagnostics",
     category=_CATEGORY,
@@ -362,6 +370,7 @@ def ros2_topic_relay(ctx: dict) -> dict:
     inputs={
         "trigger": AnyPort,
         "action": Enum(["start", "stop"], default="start"),
+        "run_id": Text(default="ros2_launch"),
         "package": Text(default=""),
         "launch_file": Text(default=""),
         "arguments": Text(default=""),
@@ -369,30 +378,57 @@ def ros2_topic_relay(ctx: dict) -> dict:
         "wait_seconds": Float(default=0.0),
         "stop_pattern": Text(default=""),
     },
-    outputs={"launched": Bool, "report": Text},
+    outputs={"launched": Bool, "run_id": Text, "report": Text},
 )
 def ros2_launch(ctx: dict) -> dict:
     action = str(ctx.get("action") or "start")
+    run_id = _managed_id(ctx.get("run_id"), "ros2_launch")
     package = str(ctx.get("package") or "").strip()
     launch_file = str(ctx.get("launch_file") or "").strip()
 
     if action == "stop":
         pattern = str(ctx.get("stop_pattern") or "").strip() or f"ros2 launch {package}".strip() or "ros2 launch"
-        result = rt.stop_detached(pattern=pattern)
+        result = rt.stop_ros2_managed(run_id, pattern=pattern)
         if result["ok"]:
-            return {"launched": False, "report": f"stopped {result.get('stopped', 0)} background launch process(es)"}
-        return {"launched": False, "report": _report(result, f"stop launch {package}")}
+            return {
+                "launched": False,
+                "run_id": run_id,
+                "report": (
+                    f"stopped {result.get('stopped', 0)} background launch "
+                    "process(es)"
+                ),
+            }
+        return {
+            "launched": False,
+            "run_id": run_id,
+            "report": _report(result, f"stop launch {package}"),
+        }
 
     if not package or not launch_file:
-        return {"launched": False, "report": "ros2 launch FAILED: set package and launch_file"}
+        return {
+            "launched": False,
+            "run_id": run_id,
+            "report": "ros2 launch FAILED: set package and launch_file",
+        }
     try:
         extra_args = shlex.split(str(ctx.get("arguments") or ""))
     except ValueError as exc:
-        return {"launched": False, "report": f"ros2 launch FAILED: invalid arguments: {exc}"}
+        return {
+            "launched": False,
+            "run_id": run_id,
+            "report": f"ros2 launch FAILED: invalid arguments: {exc}",
+        }
 
-    result = rt.run_ros2_detached(["launch", package, launch_file, *extra_args])
+    result = rt.run_ros2_managed(
+        run_id,
+        ["launch", package, launch_file, *extra_args],
+    )
     if not result["ok"]:
-        return {"launched": False, "report": _report(result, f"start launch {package} {launch_file}")}
+        return {
+            "launched": False,
+            "run_id": run_id,
+            "report": _report(result, f"start launch {package} {launch_file}"),
+        }
 
     expected_topic = str(ctx.get("expected_topic") or "").strip()
     wait_seconds = max(0.0, float(ctx.get("wait_seconds") or 0.0))
@@ -404,6 +440,7 @@ def ros2_launch(ctx: dict) -> dict:
             if check.get("ok") and expected_topic in topics:
                 return {
                     "launched": True,
+                    "run_id": run_id,
                     "report": (
                         f"launch running: {package} {launch_file}; "
                         f"{expected_topic} is discoverable via {result['backend']} backend"
@@ -412,9 +449,17 @@ def ros2_launch(ctx: dict) -> dict:
             time.sleep(1)
         return {
             "launched": True,
+            "run_id": run_id,
             "report": f"launch started: {package} {launch_file}, but {expected_topic} was not discoverable within {wait_seconds:g}s",
         }
-    return {"launched": True, "report": f"launch running: {package} {launch_file} via {result['backend']} backend"}
+    return {
+        "launched": True,
+        "run_id": run_id,
+        "report": (
+            f"launch running: {package} {launch_file} via "
+            f"{result['backend']} backend"
+        ),
+    }
 
 
 @node(

@@ -545,7 +545,7 @@ def run_ros2_managed(key: str, args: list[str]) -> dict[str, Any]:
         # gets fixed automatically or fails immediately with an actionable
         # message, instead of surfacing as an opaque "no active publisher"
         # from whatever's downstream of this run.
-        if len(args) >= 2 and args[0] == "run":
+        if len(args) >= 2 and args[0] in {"run", "launch"}:
             package = args[1]
             package_error = _ensure_container_package(package)
             if package_error:
@@ -560,6 +560,196 @@ def run_ros2_managed(key: str, args: list[str]) -> dict[str, Any]:
         return {"ok": True, "backend": backend}
     except Exception as exc:
         return {"ok": False, "backend": backend, "error": str(exc)}
+
+
+def ros2_managed_status(key: str) -> dict[str, Any]:
+    """Return the current state of one named ROS 2 process."""
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        return {
+            "ok": False,
+            "running": False,
+            "backend": _passive_backend(),
+            "error": "managed ROS 2 service ID is required",
+        }
+    proc = _managed_detached.get(clean_key)
+    if proc is not None:
+        return {
+            "ok": True,
+            "running": proc.poll() is None,
+            "backend": "native",
+            "pid": proc.pid,
+            "exit_code": proc.poll(),
+        }
+    pattern = _managed_docker_patterns.get(clean_key, "")
+    if pattern:
+        backend = detect_backend()["backend"]
+        if backend != "docker":
+            return {
+                "ok": True,
+                "running": False,
+                "backend": backend,
+                "error": "the Docker-backed ROS 2 service is no longer reachable",
+            }
+        result = _run(
+            ["docker", "exec", CONTAINER, "pgrep", "-f", pattern],
+            15,
+        )
+        return {
+            "ok": result.returncode in (0, 1),
+            "running": result.returncode == 0,
+            "backend": "docker",
+            "error": (
+                ""
+                if result.returncode in (0, 1)
+                else result.stderr.strip() or "could not inspect Docker process"
+            ),
+        }
+    return {
+        "ok": True,
+        "running": False,
+        "backend": _passive_backend(),
+    }
+
+
+def inspect_topic_interfaces(
+    expectations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Inspect expected topic types and publisher endpoints in one ROS graph."""
+    normalized: list[dict[str, Any]] = []
+    for item in expectations:
+        if not isinstance(item, dict):
+            continue
+        topic = str(item.get("topic") or "").strip()
+        if not topic:
+            continue
+        normalized.append({
+            "name": str(item.get("name") or topic).strip() or topic,
+            "topic": topic,
+            "message_type": str(item.get("message_type") or "").strip(),
+            "required": bool(item.get("required", True)),
+        })
+    if not normalized:
+        return {
+            "ok": False,
+            "ready": False,
+            "backend": _passive_backend(),
+            "interfaces": [],
+            "error": "at least one expected ROS 2 topic is required",
+        }
+
+    listing = run_ros2(["topic", "list", "-t"], timeout=15)
+    if not listing.get("ok"):
+        return {
+            "ok": False,
+            "ready": False,
+            "backend": listing.get("backend", _passive_backend()),
+            "interfaces": [],
+            "error": str(
+                listing.get("error")
+                or listing.get("stderr")
+                or "could not list ROS 2 topics"
+            ),
+        }
+    discovered: dict[str, str] = {}
+    for raw_line in str(listing.get("stdout") or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^(\S+)\s+\[([^\]]+)\]\s*$", line)
+        if match:
+            discovered[match.group(1)] = match.group(2).strip()
+        else:
+            discovered[line.split()[0]] = ""
+
+    interfaces: list[dict[str, Any]] = []
+    for expected in normalized:
+        topic = expected["topic"]
+        actual_type = discovered.get(topic, "")
+        present = topic in discovered
+        type_matches = bool(
+            present
+            and (
+                not expected["message_type"]
+                or not actual_type
+                or actual_type == expected["message_type"]
+            )
+        )
+        publisher_count: int | None = None
+        detail_error = ""
+        if present and type_matches:
+            detail = run_ros2(["topic", "info", topic, "-v"], timeout=15)
+            if detail.get("ok"):
+                count_match = re.search(
+                    r"Publisher count:\s*(\d+)",
+                    str(detail.get("stdout") or ""),
+                    re.IGNORECASE,
+                )
+                if count_match:
+                    publisher_count = int(count_match.group(1))
+            else:
+                detail_error = str(
+                    detail.get("error")
+                    or detail.get("stderr")
+                    or "could not inspect topic endpoints"
+                )
+        publishing = bool(
+            present
+            and type_matches
+            and publisher_count != 0
+        )
+        if not present:
+            status = "missing"
+        elif not type_matches:
+            status = "type_mismatch"
+        elif publisher_count == 0:
+            status = "no_publisher"
+        elif publisher_count is None:
+            status = "present"
+        else:
+            status = "publishing"
+        interfaces.append({
+            **expected,
+            "actual_message_type": actual_type,
+            "present": present,
+            "type_matches": type_matches,
+            "publisher_count": publisher_count,
+            "publishing": publishing,
+            "status": status,
+            "error": detail_error,
+        })
+
+    blocking = [
+        item
+        for item in interfaces
+        if item["required"] and not item["publishing"]
+    ]
+    return {
+        "ok": True,
+        "ready": not blocking,
+        "backend": listing.get("backend", _passive_backend()),
+        "interfaces": interfaces,
+        "missing": [item["topic"] for item in blocking],
+    }
+
+
+def wait_for_topic_interfaces(
+    expectations: list[dict[str, Any]],
+    *,
+    timeout: float,
+    interval: float = 0.5,
+) -> dict[str, Any]:
+    """Wait for required topic publishers while preserving structured status."""
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    result = inspect_topic_interfaces(expectations)
+    while (
+        result.get("ok")
+        and not result.get("ready")
+        and time.monotonic() < deadline
+    ):
+        time.sleep(max(0.05, float(interval)))
+        result = inspect_topic_interfaces(expectations)
+    return result
 
 
 def stop_ros2_managed(key: str, pattern: str = "") -> dict[str, Any]:

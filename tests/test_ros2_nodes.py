@@ -968,17 +968,21 @@ def test_topic_relay_stop_is_scoped_to_run_id(monkeypatch):
 def test_launch_builds_ros2_launch_command(monkeypatch):
     captured = {}
 
-    def fake_detached(args):
+    def fake_managed(key, args):
+        captured["key"] = key
         captured["args"] = args
         return {"ok": True, "backend": "native"}
 
-    monkeypatch.setattr(rt, "run_ros2_detached", fake_detached)
+    monkeypatch.setattr(rt, "run_ros2_managed", fake_managed)
     result = _NODE_REGISTRY["ROS2Launch"]({
+        "run_id": "front camera",
         "package": "camera_bringup",
         "launch_file": "camera.launch.py",
         "arguments": "device:=0 view:=false",
     })
     assert result["launched"] is True
+    assert result["run_id"] == "front_camera"
+    assert captured["key"] == "front_camera"
     assert captured["args"] == [
         "launch",
         "camera_bringup",
@@ -987,6 +991,93 @@ def test_launch_builds_ros2_launch_command(monkeypatch):
         "view:=false",
     ]
     assert "launch running" in result["report"]
+
+
+def test_launch_stop_is_scoped_to_managed_run(monkeypatch):
+    captured = {}
+
+    def fake_stop(key, pattern=""):
+        captured.update(key=key, pattern=pattern)
+        return {"ok": True, "backend": "native", "stopped": 1}
+
+    monkeypatch.setattr(rt, "stop_ros2_managed", fake_stop)
+    result = _NODE_REGISTRY["ROS2Launch"]({
+        "action": "stop",
+        "run_id": "front camera",
+        "package": "camera_bringup",
+    })
+
+    assert result["launched"] is False
+    assert result["run_id"] == "front_camera"
+    assert captured == {
+        "key": "front_camera",
+        "pattern": "ros2 launch camera_bringup",
+    }
+
+
+def test_topic_interface_inspection_reports_rgbd_publishers(monkeypatch):
+    def fake_run(args, timeout=15.0):
+        if args == ["topic", "list", "-t"]:
+            return {
+                "ok": True,
+                "backend": "native",
+                "stdout": (
+                    "/depth_cam/rgb0/image_raw [sensor_msgs/msg/Image]\n"
+                    "/depth_cam/depth0/image_raw [sensor_msgs/msg/Image]\n"
+                ),
+                "stderr": "",
+            }
+        if args[:2] == ["topic", "info"]:
+            return {
+                "ok": True,
+                "backend": "native",
+                "stdout": "Publisher count: 1\nSubscription count: 0\n",
+                "stderr": "",
+            }
+        raise AssertionError(args)
+
+    monkeypatch.setattr(rt, "run_ros2", fake_run)
+    result = rt.inspect_topic_interfaces([
+        {
+            "name": "rgb",
+            "topic": "/depth_cam/rgb0/image_raw",
+            "message_type": "sensor_msgs/msg/Image",
+            "required": True,
+        },
+        {
+            "name": "depth",
+            "topic": "/depth_cam/depth0/image_raw",
+            "message_type": "sensor_msgs/msg/Image",
+            "required": True,
+        },
+    ])
+
+    assert result["ok"] is True
+    assert result["ready"] is True
+    assert [item["status"] for item in result["interfaces"]] == [
+        "publishing",
+        "publishing",
+    ]
+
+
+def test_topic_interface_inspection_identifies_missing_required_topic(monkeypatch):
+    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: {
+        "ok": True,
+        "backend": "native",
+        "stdout": "/depth_cam/rgb0/image_raw [sensor_msgs/msg/Image]\n",
+        "stderr": "",
+    })
+
+    result = rt.inspect_topic_interfaces([{
+        "name": "depth",
+        "topic": "/depth_cam/depth0/image_raw",
+        "message_type": "sensor_msgs/msg/Image",
+        "required": True,
+    }])
+
+    assert result["ready"] is False
+    assert result["missing"] == ["/depth_cam/depth0/image_raw"]
+    assert result["interfaces"][0]["status"] == "missing"
 
 
 def test_run_builds_ros2_run_command(monkeypatch):

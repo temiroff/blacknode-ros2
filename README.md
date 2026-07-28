@@ -67,7 +67,7 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2TopicPublish` | Publish a bounded number of messages to a topic |
 | `ROS2TopicPublisher` | Start or stop a managed continuous topic publisher |
 | `ROS2TopicRelay` | Continuously subscribe to one typed data topic and republish unchanged messages on another topic |
-| `ROS2Launch` | Start/stop a background `ros2 launch ...` process |
+| `ROS2Launch` | Start/stop a background `ros2 launch ...` process by stable `run_id` |
 | `ROS2Run` | Start/stop a background `ros2 run <package> <executable> ...` process |
 | `ROS2NodeList` | List running ROS nodes |
 | `ROS2ServiceList` | List live services, optionally with types |
@@ -79,6 +79,13 @@ nodes appear under the **ROS 2** palette category.
 
 Action nodes carry an optional `trigger` input so you can sequence them in a
 graph (start the publisher → then echo).
+
+Managed processes are scoped by stable IDs and topic groups can be inspected
+as one contract. This lets a camera provider verify RGB, camera-info, depth,
+and point-cloud publishers together while remaining independent from robot
+motion deployments. The semantic camera and depth nodes live in
+`blacknode-perception`; raw ROS execution, discovery, and image transport live
+here.
 
 ## Components
 
@@ -107,7 +114,7 @@ dependency on `blacknode-ros2/core`:
 
 | Capability node | Lives in |
 |---|---|
-| `CameraROS2Subscribe`, `CameraROS2Publish`, `CameraROS2Http` | `blacknode-perception` → `camera/ros2` adapter |
+| `CameraROS2Provider`, `CameraROS2Subscribe`, `CameraROS2Publish`, `CameraROS2Http`, `DepthROS2Subscribe` | `blacknode-perception` → `camera/ros2` and `depth/ros2` adapters |
 | `ROS2JointState`, `ROS2SetJoint`, `ROS2ManualMove`, `ROS2MotionDashboard` | `blacknode-controllers` → `joint-control/ros2` adapter |
 | `ROS2BaseMove`, `ROS2BaseStop`, `ROS2LaserScanCheck`, `ROS2OdomState` | `blacknode-controllers` → `mobile-base/ros2` adapter |
 | `PolicyRuntime`, `PolicySafetyGate` | `blacknode-controllers` → `policy/ros2` adapter |
