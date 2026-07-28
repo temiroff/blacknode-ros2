@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import html
+import re
 import shlex
 import time
 from typing import Any
@@ -219,6 +220,138 @@ def _run_topic_publisher(ctx: dict) -> dict:
         "running": True,
         "backend": result["backend"],
         "report": f"topic publisher started on {topic} but the topic is not discoverable yet",
+    }
+
+
+_MOTION_TOPIC_TOKENS = {
+    "command",
+    "commands",
+    "cmd_vel",
+    "joint_command",
+    "joint_commands",
+    "robot_control",
+    "servo_command",
+    "servo_commands",
+    "trajectory",
+}
+
+
+def _motion_destination(topic: str) -> bool:
+    segments = {
+        segment
+        for segment in str(topic or "").strip().lower().split("/")
+        if segment
+    }
+    return bool(segments & _MOTION_TOPIC_TOKENS)
+
+
+@node(
+    name="ROS2TopicRelay", component="topics",
+    category=_CATEGORY,
+    description=(
+        "Continuously subscribe to one ROS 2 data topic and republish the same "
+        "message type on another topic. Motion command topics are rejected; "
+        "use a safety-gated controller for robot motion."
+    ),
+    inputs={
+        "trigger": AnyPort,
+        "action": Enum(["start", "stop"], default="start"),
+        "run_id": Text(default="topic_relay"),
+        "source_topic": Text(default="/source"),
+        "destination_topic": Text(default="/destination"),
+        "msg_type": Text(default="std_msgs/msg/String"),
+        "qos": Enum(["sensor_data", "reliable"], default="sensor_data"),
+        "queue_depth": Int(default=10),
+    },
+    outputs={
+        "running": Bool,
+        "backend": Text,
+        "source_topic": Text,
+        "destination_topic": Text,
+        "report": Text,
+    },
+)
+def ros2_topic_relay(ctx: dict) -> dict:
+    action = str(ctx.get("action") or "start").strip().lower()
+    run_id = re.sub(
+        r"[^a-zA-Z0-9_-]+",
+        "_",
+        str(ctx.get("run_id") or "topic_relay").strip(),
+    ).strip("_") or "topic_relay"
+    source_topic = str(ctx.get("source_topic") or "/source").strip() or "/source"
+    destination_topic = (
+        str(ctx.get("destination_topic") or "/destination").strip()
+        or "/destination"
+    )
+    message_type = (
+        str(ctx.get("msg_type") or "std_msgs/msg/String").strip()
+        or "std_msgs/msg/String"
+    )
+    backend = rt.detect_backend()["backend"]
+    base = {
+        "backend": backend,
+        "source_topic": source_topic,
+        "destination_topic": destination_topic,
+    }
+    if action == "stop":
+        result = rt.stop_topic_relay(run_id)
+        return {
+            **base,
+            "running": False,
+            "backend": result.get("backend", backend),
+            "report": (
+                f"stopped topic relay {run_id}"
+                if result.get("ok")
+                else _report(result, f"stop topic relay {run_id}")
+            ),
+        }
+    if action != "start":
+        return {
+            **base,
+            "running": False,
+            "report": f"topic relay FAILED: action must be start or stop, got {action!r}",
+        }
+    if source_topic == destination_topic:
+        return {
+            **base,
+            "running": False,
+            "report": "topic relay FAILED: source and destination topics must be different",
+        }
+    if _motion_destination(destination_topic):
+        return {
+            **base,
+            "running": False,
+            "report": (
+                f"topic relay BLOCKED: {destination_topic} looks like a motion "
+                "command topic. Use a safety-gated Blacknode controller so "
+                "arming, freshness, calibration, and limits remain enforced."
+            ),
+        }
+    qos = str(ctx.get("qos") or "sensor_data").strip().lower()
+    if qos not in {"sensor_data", "reliable"}:
+        qos = "sensor_data"
+    try:
+        queue_depth = max(1, int(ctx.get("queue_depth") or 10))
+    except (TypeError, ValueError):
+        queue_depth = 10
+    result = rt.start_topic_relay(
+        run_id=run_id,
+        source_topic=source_topic,
+        destination_topic=destination_topic,
+        message_type=message_type,
+        qos=qos,
+        queue_depth=queue_depth,
+    )
+    return {
+        **base,
+        "running": bool(result.get("ok")),
+        "backend": result.get("backend", backend),
+        "report": (
+            f"relaying {source_topic} -> {destination_topic} "
+            f"({message_type}, {qos}) via {result.get('backend', backend)}"
+            if result.get("ok")
+            else _report(result, f"relay {source_topic} -> {destination_topic}")
+        ),
     }
 
 

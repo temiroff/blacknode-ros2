@@ -7,5 +7,6 @@ for _implementation in (
     ros2.ros2_topic_echo,
     ros2.ros2_topic_publish,
     ros2.ros2_topic_publisher,
+    ros2.ros2_topic_relay,
 ):
     register_implementation(_implementation)
