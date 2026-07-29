@@ -3,7 +3,7 @@
 ``ROS2Status`` checks a robot connection over the best available transport:
 native ``rclpy`` when importable, otherwise rosbridge (starting the local
 rosbridge server when asked). The joint-space motion nodes that build on these
-transports live in the ``blacknode-controllers`` joint-control ROS 2 adapter;
+transports live in the ``blacknode-motion`` arm ROS 2 adapter;
 camera streaming lives in the ``blacknode-perception`` camera ROS 2 adapter.
 
 Every node returns a structured report instead of raising, so workflows stay

@@ -96,7 +96,7 @@ def runtime_status() -> dict[str, Any]:
         continuous_follows = []
         leader_followers = []
     try:
-        from blacknode.pkg.blacknode_controllers.policy.policy_runtime import (
+        from blacknode.pkg.blacknode_motion.policy.policy_runtime import (
             runtime_status as policy_runtime_status,
         )
         policy_runs = policy_runtime_status()
@@ -131,7 +131,7 @@ def stop_runtime_services() -> dict[str, Any]:
         follow_result = {"ok": False, "stopped": 0, "error": str(exc)}
         leader_follower_result = {"ok": False, "stopped": 0, "error": str(exc)}
     try:
-        from blacknode.pkg.blacknode_controllers.policy.policy_runtime import stop_policy_services
+        from blacknode.pkg.blacknode_motion.policy.policy_runtime import stop_policy_services
         policy_result = stop_policy_services()
     except ModuleNotFoundError:
         policy_result = {"ok": True, "stopped": 0, "error": ""}

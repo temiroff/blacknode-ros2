@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -24,7 +25,23 @@ from blacknode.node import _NODE_REGISTRY
 from blacknode.packages import (
     _PACKAGE_REGISTRY,
     component_dependency_plan,
+    load_package,
 )
+
+PACKAGE_DIR = Path(__file__).resolve().parents[1]
+with patch(
+    "blacknode.packages._read_component_overrides",
+    return_value=({
+        "core": True,
+        "topics": True,
+        "services": True,
+        "diagnostics": True,
+        "rosbridge": True,
+        "processes": True,
+    }, ""),
+):
+    load_package(PACKAGE_DIR)
+
 from blacknode.pkg.blacknode_ros2 import ros2_runtime as rt
 from blacknode.pkg.blacknode_ros2 import ros2_live as live
 from blacknode.pkg.blacknode_ros2 import ros2_native_runtime as nr
@@ -32,8 +49,7 @@ from blacknode.pkg.blacknode_ros2 import rosbridge_runtime as rb
 from blacknode.pkg.blacknode_ros2 import rosbridge_service as service
 from blacknode.workflow import validate_workflow
 
-TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
-PACKAGE_DIR = TEMPLATE_DIR.parent
+TEMPLATE_DIR = PACKAGE_DIR / "templates"
 
 EXPECTED_NODES = [
     "ROS2BridgeEcho",
@@ -55,6 +71,13 @@ EXPECTED_NODES = [
     "ROS2TopicRelay",
     "ROS2VisualDashboard",
 ]
+
+
+def test_native_components_are_default_and_remote_process_tools_are_optional():
+    info = _PACKAGE_REGISTRY["blacknode-ros2"]
+    assert all(info.components[name]["default"] for name in {"core", "topics", "services", "diagnostics"})
+    assert info.components["rosbridge"]["default"] is False
+    assert info.components["processes"]["default"] is False
 
 EXPECTED_COMPONENT_NODES = {
     "core": set(),
@@ -166,7 +189,10 @@ def test_disabled_component_does_not_register_its_nodes(tmp_path):
         encoding="utf-8",
     )
 
-    expected_nodes = sorted(set(EXPECTED_NODES) - EXPECTED_COMPONENT_NODES["topics"])
+    expected_nodes = sorted(
+        EXPECTED_COMPONENT_NODES["services"]
+        | EXPECTED_COMPONENT_NODES["diagnostics"]
+    )
     script = f"""
 from blacknode.packages import load_package
 info = load_package(r"{probe_dir}")
@@ -210,7 +236,7 @@ def test_topic_relay_has_generic_data_contract():
 
 
 def test_capability_nodes_are_not_owned_by_the_integration_layer():
-    """Camera and joint-control nodes belong to their capability packages.
+    """Camera and arm-control nodes belong to their capability packages.
 
     They may be registered (those packages are installed too), but never by
     this one -- that is what keeps the ROS 2 layer free of domain verticals.
