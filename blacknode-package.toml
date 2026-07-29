@@ -10,19 +10,19 @@ component-mode = true
 "ROS 2" = "#2e9fe6"
 
 [components.core]
-description = "Shared ROS 2 graph access that the transport and concern components build on."
+description = "Shared native ROS 2 graph and DDS access that the integration components build on."
 default = true
-capabilities = ["integration.ros2", "transport.ros2", "transport.rosbridge"]
+capabilities = ["integration.ros2", "transport.ros2"]
 nodes = ["nodes"]
 module-root = true
 
 [components.core.dependencies]
-pip = ["PyYAML>=6", "roslibpy>=1.5", "numpy>=1.24", "pillow>=10"]
-imports = ["yaml", "roslibpy", "numpy", "PIL"]
+pip = ["PyYAML>=6", "numpy>=1.24", "pillow>=10"]
+imports = ["yaml", "numpy", "PIL"]
 
 [components.rosbridge]
 description = "rosbridge websocket transport and server lifecycle."
-default = true
+default = false
 capabilities = ["transport.rosbridge"]
 nodes = ["components/rosbridge/nodes"]
 node-types = [
@@ -30,6 +30,8 @@ node-types = [
 ]
 
 [components.rosbridge.dependencies]
+pip = ["roslibpy>=1.5"]
+imports = ["roslibpy"]
 requires = [{ component = "core" }]
 
 [components.topics]
@@ -59,7 +61,7 @@ requires = [{ component = "core" }]
 
 [components.processes]
 description = "ros2 run/launch process supervision."
-default = true
+default = false
 capabilities = ["integration.ros2.processes"]
 nodes = ["components/processes/nodes"]
 node-types = [

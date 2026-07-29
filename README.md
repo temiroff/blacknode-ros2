@@ -1,9 +1,10 @@
 # blacknode-ros2
 
-The package is the horizontal `ros2` **integration layer**. Its default `core`
-component provides graph discovery, native and rosbridge transports, topics,
-services, processes, and diagnostics — and nothing domain-specific. Camera,
-joint-control, mobile-base, policy, and skill nodes are ROS 2 *adapters* that
+The package is the horizontal `ros2` **integration layer**. Native DDS is the
+default robot-control path through `core`, `topics`, `services`, and
+`diagnostics`. `rosbridge` and process launching are optional components for
+browser, remote-workflow, and managed launch use cases. Camera, arm, base,
+policy, and skill nodes are ROS 2 *adapters* that
 live in the package owning that capability and declare a versioned dependency
 on `blacknode-ros2/core`.
 
@@ -92,14 +93,14 @@ here.
 Each selectable component owns its node registration path and depends on the
 shared `core` runtime where needed:
 
-| Component | Provides |
-|---|---|
-| `core` | Stable native ROS 2, rosbridge, CLI/Docker, stream, and managed-service runtime contracts |
-| `topics` | Topic discovery, bounded publish/echo, and continuous publishing |
-| `services` | Service discovery |
-| `processes` | Managed `ros2 run` and `ros2 launch` processes |
-| `diagnostics` | Backend status, graph inspection, and interface inspection |
-| `rosbridge` | WebSocket topic I/O, connection status, and local server lifecycle |
+| Component | Default | Provides |
+|---|---:|---|
+| `core` | On | Stable native ROS 2 and DDS runtime contracts |
+| `topics` | On | Topic discovery, bounded publish/echo, and continuous publishing |
+| `services` | On | Service discovery |
+| `diagnostics` | On | Backend status, graph inspection, and interface inspection |
+| `rosbridge` | Off | WebSocket topic I/O, connection status, and local server lifecycle |
+| `processes` | Off | Managed `ros2 run` and `ros2 launch` processes |
 
 Templates declare the exact components they use. Enabling any feature component
 resolves `core` first, and disabling a component removes its nodes from package
@@ -115,10 +116,10 @@ dependency on `blacknode-ros2/core`:
 | Capability node | Lives in |
 |---|---|
 | `CameraROS2Provider`, `CameraROS2Subscribe`, `CameraROS2Publish`, `CameraROS2Http`, `DepthROS2Subscribe` | `blacknode-perception` → `camera/ros2` and `depth/ros2` adapters |
-| `ROS2JointState`, `ROS2SetJoint`, `ROS2ManualMove`, `ROS2MotionDashboard` | `blacknode-controllers` → `joint-control/ros2` adapter |
-| `ROS2BaseMove`, `ROS2BaseStop`, `ROS2LaserScanCheck`, `ROS2OdomState` | `blacknode-controllers` → `mobile-base/ros2` adapter |
-| `PolicyRuntime`, `PolicySafetyGate` | `blacknode-controllers` → `policy/ros2` adapter |
-| `ROS2FollowDetectionJoint`, `ROS2LeaderFollower` | `blacknode-skills` → `follow-person/ros2` adapter |
+| `ROS2JointState`, `ROS2SetJoint`, `ROS2ManualMove`, `ROS2MotionDashboard` | `blacknode-motion` → `arm/ros2` adapter |
+| `ROS2BaseMove`, `ROS2BaseStop`, `ROS2LaserScanCheck`, `ROS2OdomState` | `blacknode-motion` → `base/ros2` adapter |
+| `PolicyRuntime`, `PolicySafetyGate` | `blacknode-motion` → `policy/ros2` adapter |
+| `ROS2FollowDetectionJoint`, `ROS2LeaderFollower` | `blacknode-skills` → `follow/ros2` adapter |
 
 Keeping the split this way means a second transport (Zenoh, MQTT, a direct
 Python bridge) can be added later as a sibling adapter without reorganizing
@@ -173,7 +174,7 @@ To verify it visually:
 
 Camera and joint-motion templates ship with the packages that own those
 capabilities: **Camera — Live Video** with `blacknode-perception`, and
-**Move a Robot Joint** with `blacknode-controllers`. Both still appear in the
+**Move a Robot Joint** with `blacknode-motion`. Both still appear in the
 same Templates tab once those packages are installed.
 
 The topic publisher remains active so you can recook individual nodes. To stop
@@ -278,8 +279,8 @@ Blacknode -> rclpy -> /joint_states + /joint_commands -> robot driver
 ```
 
 Use `Robot` for normal setup, then `ROS2Status` from this package and
-`ROS2JointState` / `ROS2SetJoint` from the `blacknode-controllers`
-joint-control ROS 2 adapter. `ROS2FollowDetectionJoint`
+`ROS2JointState` / `ROS2SetJoint` from the `blacknode-motion`
+arm ROS 2 adapter. `ROS2FollowDetectionJoint`
 (`blacknode-skills`) adds cube-following from a CV2 detection.
 
 `ROS2SetJoint`'s `position` input is an **absolute target angle**, not a
@@ -339,7 +340,7 @@ for your robot. The same graph runs on native ROS 2 and Windows rosbridge.
    `/joint_commands`.
    `ROS2Status` selects and prepares the available transport automatically.
 3. In Blacknode, load **Move a Robot Joint** (ships with
-   `blacknode-controllers`) and press **Run** — the dashboard shows the live
+   `blacknode-motion`) and press **Run** — the dashboard shows the live
    pose with `armed=false` (no motion).
 4. Set the `ROS2SetJoint` node's `joint` and target `position`, then
    `armed=true`, and recook. It syncs to the current pose, ramps to the

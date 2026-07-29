@@ -13,7 +13,7 @@ capability adapters build on.
 **Do not add domain nodes here.** A node that is *about* a capability belongs
 to that capability's package as a ROS 2 adapter component requiring
 `blacknode-ros2/core`: camera/image nodes in `blacknode-perception`
-(`camera/ros2`), joint and base motion and policy in `blacknode-controllers`,
+(`camera/ros2`), joint and base motion and policy in `blacknode-motion`,
 task skills in `blacknode-skills`, physical drivers in `blacknode-drivers`,
 robot contracts and profiles in `blacknode-robot`. This keeps ownership
 single and lets a future Zenoh/MQTT layer be added as a sibling adapter
