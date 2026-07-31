@@ -29,6 +29,54 @@ def _sanitize_node_name(topic: str) -> str:
     return f"blacknode_image_snapshot_{text[:48]}"
 
 
+def _raw_depth_summary(msg: Image) -> dict[str, Any]:
+    height = int(msg.height)
+    width = int(msg.width)
+    encoding = str(msg.encoding or "").strip().lower()
+    if height <= 0 or width <= 0 or encoding not in {
+        "mono16",
+        "16uc1",
+        "32fc1",
+    }:
+        return {}
+    bytes_per_pixel = 4 if encoding == "32fc1" else 2
+    step = int(msg.step or width * bytes_per_pixel)
+    if step < width * bytes_per_pixel:
+        return {}
+    raw = bytes(msg.data)
+    required = height * step
+    if len(raw) < required:
+        return {}
+    dtype = np.dtype(
+        (">f4" if bool(msg.is_bigendian) else "<f4")
+        if encoding == "32fc1"
+        else (">u2" if bool(msg.is_bigendian) else "<u2")
+    )
+    rows = np.frombuffer(raw[:required], dtype=np.uint8).reshape((height, step))
+    packed = rows[:, : width * bytes_per_pixel].copy()
+    depth = packed.view(dtype).reshape((height, width)).astype(np.float32)
+    valid = depth[np.isfinite(depth) & (depth > 0)]
+    if valid.size == 0:
+        return {
+            "encoding": str(msg.encoding),
+            "valid_count": 0,
+            "total_count": int(width * height),
+        }
+    minimum, p05, median, p95 = np.percentile(
+        valid,
+        [0.0, 5.0, 50.0, 95.0],
+    )
+    return {
+        "encoding": str(msg.encoding),
+        "valid_count": int(valid.size),
+        "total_count": int(width * height),
+        "minimum": float(minimum),
+        "p05": float(p05),
+        "median": float(median),
+        "p95": float(p95),
+    }
+
+
 def _raw_image_to_pil(msg: Image) -> PILImage.Image:
     height = int(msg.height)
     width = int(msg.width)
@@ -138,6 +186,10 @@ def _metadata(msg: Any, message_type: str, pil: PILImage.Image, mime: str, byte_
         base["encoding"] = str(msg.encoding)
         base["step"] = int(msg.step)
         base["source_byte_count"] = len(bytes(msg.data))
+        depth_summary = _raw_depth_summary(msg)
+        if depth_summary:
+            base["depth_summary_raw"] = depth_summary
+    base["received_at_ns"] = time.time_ns()
     return base
 
 
