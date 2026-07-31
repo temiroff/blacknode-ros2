@@ -59,6 +59,54 @@ def _sanitize_node_name(topic: str) -> str:
     return f"blacknode_image_stream_{text[:48]}"
 
 
+def _raw_depth_summary(msg: Image) -> dict[str, Any]:
+    height = int(msg.height)
+    width = int(msg.width)
+    encoding = str(msg.encoding or "").strip().lower()
+    if height <= 0 or width <= 0 or encoding not in {
+        "mono16",
+        "16uc1",
+        "32fc1",
+    }:
+        return {}
+    bytes_per_pixel = 4 if encoding == "32fc1" else 2
+    step = int(msg.step or width * bytes_per_pixel)
+    if step < width * bytes_per_pixel:
+        return {}
+    raw = bytes(msg.data)
+    required = height * step
+    if len(raw) < required:
+        return {}
+    dtype = np.dtype(
+        (">f4" if bool(msg.is_bigendian) else "<f4")
+        if encoding == "32fc1"
+        else (">u2" if bool(msg.is_bigendian) else "<u2")
+    )
+    rows = np.frombuffer(raw[:required], dtype=np.uint8).reshape((height, step))
+    packed = rows[:, : width * bytes_per_pixel].copy()
+    depth = packed.view(dtype).reshape((height, width)).astype(np.float32)
+    valid = depth[np.isfinite(depth) & (depth > 0)]
+    if valid.size == 0:
+        return {
+            "encoding": str(msg.encoding),
+            "valid_count": 0,
+            "total_count": int(width * height),
+        }
+    minimum, p05, median, p95 = np.percentile(
+        valid,
+        [0.0, 5.0, 50.0, 95.0],
+    )
+    return {
+        "encoding": str(msg.encoding),
+        "valid_count": int(valid.size),
+        "total_count": int(width * height),
+        "minimum": float(minimum),
+        "p05": float(p05),
+        "median": float(median),
+        "p95": float(p95),
+    }
+
+
 def _raw_image_to_pil(msg: Image) -> PILImage.Image:
     height = int(msg.height)
     width = int(msg.width)
@@ -312,6 +360,10 @@ def _spin_ros(store: FrameStore, stop_event: threading.Event, args: argparse.Nam
                     "stamp_nanosec": int(msg.header.stamp.nanosec),
                     "frame_id": str(msg.header.frame_id),
                 }
+                depth_summary = _raw_depth_summary(msg)
+                if depth_summary:
+                    metadata["depth_summary_raw"] = depth_summary
+            metadata["received_at_ns"] = time.time_ns()
             store.put(
                 _jpeg_bytes(
                     pil,
