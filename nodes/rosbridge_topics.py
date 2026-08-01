@@ -1,6 +1,6 @@
 """Generic rosbridge topic I/O (JSON in, JSON out).
 
-``ROS2TopicPublish``/``ROS2TopicEcho`` go through a local ros2 CLI or Docker
+``ROS2TopicPublisher``/``ROS2TopicEcho`` go through a local ros2 CLI or Docker
 DDS domain. These two instead talk straight to a remote robot's rosbridge
 WebSocket, so an editor on Windows can read and write any topic on the robot —
 including robot-specific message types this machine has never built (the type

@@ -1,0 +1,76 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "Explore the Live ROS 2 Graph",
+  "saved_at": "2026-07-31T00:00:00",
+  "entrypoint": {
+    "node_id": "explorer",
+    "port": "graph"
+  },
+  "metadata": {
+    "template": true,
+    "description": "Capture the live ROS 2 topology as a visual publisher-to-topic-to-subscriber map. Filter by namespace, inspect message types and QoS, and add selected topic monitors to the workflow. The scan is read-only and bounds endpoint inspection with max_topics.",
+    "color": "#2e9fe6",
+    "required_packages": ["blacknode-ros2"],
+    "required_components": [
+      "blacknode-ros2/core",
+      "blacknode-ros2/diagnostics"
+    ]
+  },
+  "node_meta": {
+    "explorer": {
+      "id": "explorer",
+      "type": "ROS2GraphExplorer",
+      "params": {
+        "namespace": "/",
+        "include_system": false,
+        "include_endpoints": true,
+        "max_topics": 40,
+        "timeout": 8.0
+      },
+      "pos": [80, 80],
+      "inputs": [
+        "trigger",
+        "namespace",
+        "include_system",
+        "include_endpoints",
+        "max_topics",
+        "timeout"
+      ],
+      "outputs": [
+        "available",
+        "backend",
+        "graph",
+        "nodes",
+        "topics",
+        "services",
+        "report"
+      ],
+      "input_types": {
+        "trigger": "Any",
+        "namespace": "Text",
+        "include_system": "Bool",
+        "include_endpoints": "Bool",
+        "max_topics": "Int",
+        "timeout": "Float"
+      },
+      "output_types": {
+        "available": "Bool",
+        "backend": "Text",
+        "graph": "Dict",
+        "nodes": "List",
+        "topics": "List",
+        "services": "List",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "namespace": "/",
+        "include_system": false,
+        "include_endpoints": true,
+        "max_topics": 40,
+        "timeout": 8.0
+      }
+    }
+  },
+  "edges": []
+}

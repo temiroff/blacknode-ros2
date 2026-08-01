@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-ros2"
-version = "0.5.9"
+version = "0.5.14"
 description = "ROS 2 graph, topic, service, process, native, and rosbridge integration primitives."
 requires-blacknode = ">=0.3.0"
 layer = "ros2"
@@ -35,13 +35,13 @@ imports = ["roslibpy"]
 requires = [{ component = "core" }]
 
 [components.topics]
-description = "Topic discovery, echo, and publication."
+description = "Topic discovery, named subscriptions, echo, and publication."
 default = true
 capabilities = ["integration.ros2.topics"]
 nodes = ["components/topics/nodes"]
 node-types = [
-  "ROS2TopicEcho", "ROS2TopicList", "ROS2TopicPublish", "ROS2TopicPublisher",
-  "ROS2TopicRelay"
+  "ROS2TopicEcho", "ROS2TopicList", "ROS2TopicPublisher", "ROS2TopicRelay",
+  "ROS2TopicSubscriber"
 ]
 
 [components.topics.dependencies]
@@ -65,7 +65,8 @@ default = false
 capabilities = ["integration.ros2.processes"]
 nodes = ["components/processes/nodes"]
 node-types = [
-  "ROS2Launch", "ROS2PackageExecutables", "ROS2Run"
+  "ROS2Launch", "ROS2PackageExecutables", "ROS2PythonNode", "ROS2Run",
+  "ROS2WorkspaceBuild"
 ]
 
 [components.processes.dependencies]
@@ -77,7 +78,8 @@ default = true
 capabilities = ["integration.ros2.diagnostics"]
 nodes = ["components/diagnostics/nodes"]
 node-types = [
-  "ROS2InterfaceShow", "ROS2NodeList", "ROS2Status", "ROS2SystemCheck", "ROS2VisualDashboard"
+  "ROS2GraphExplorer", "ROS2InterfaceShow", "ROS2NodeList", "ROS2Status",
+  "ROS2SystemCheck", "ROS2VisualDashboard"
 ]
 
 [components.diagnostics.dependencies]

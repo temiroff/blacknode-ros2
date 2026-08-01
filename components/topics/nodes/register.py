@@ -5,7 +5,7 @@ from .._implementation import register_implementation
 for _implementation in (
     ros2.ros2_topic_list,
     ros2.ros2_topic_echo,
-    ros2.ros2_topic_publish,
+    ros2.ros2_topic_subscriber,
     ros2.ros2_topic_publisher,
     ros2.ros2_topic_relay,
 ):
