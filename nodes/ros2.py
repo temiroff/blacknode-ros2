@@ -11,6 +11,7 @@ into it to sequence ROS actions (e.g. start a topic publisher before echoing).
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import html
 import re
 import shlex
@@ -117,40 +118,131 @@ def ros2_topic_echo(ctx: dict) -> dict:
 
 
 @node(
-    name="ROS2TopicPublish", component="topics",
+    name="ROS2TopicSubscriber", component="topics",
     category=_CATEGORY,
-    description="Publish one or more messages to a topic (YAML payload).",
+    description="Subscribe once, start continuously, or stop a named ROS 2 subscriber with structured live messages.",
     inputs={
         "trigger": AnyPort,
+        "action": Enum(["once", "start", "stop"], default="start"),
+        "node_name": Text(default="blacknode_subscriber"),
         "topic": Text(default="/chatter"),
         "msg_type": Text(default="std_msgs/msg/String"),
-        "data": Text(default="data: hello from Blacknode"),
-        "count": Int(default=1),
+        "history": Int(default=10),
+        "timeout": Float(default=10.0),
     },
-    outputs={"report": Text},
+    outputs={
+        "running": Bool,
+        "latest": Dict,
+        "messages": List,
+        "received": Int,
+        "backend": Text,
+        "report": Text,
+    },
 )
-def ros2_topic_publish(ctx: dict) -> dict:
-    topic = str(ctx.get("topic") or "/chatter")
-    msg_type = str(ctx.get("msg_type") or "std_msgs/msg/String")
-    data = str(ctx.get("data") or "data: hello from Blacknode")
-    count = max(1, int(ctx.get("count") or 1))
-    args = ["topic", "pub"]
-    args += ["--once"] if count == 1 else ["--times", str(count)]
-    args += [topic, msg_type, data]
-    result = rt.run_ros2(args, timeout=30 + count)
-    return {"report": _report(result, f"publish {count}x to {topic}")}
+def ros2_topic_subscriber(ctx: dict) -> dict:
+    action = str(ctx.get("action") or "start").strip().lower()
+    node_name = str(ctx.get("node_name") or "blacknode_subscriber").strip().lstrip("/")
+    topic = str(ctx.get("topic") or "/chatter").strip() or "/chatter"
+    msg_type = str(ctx.get("msg_type") or "std_msgs/msg/String").strip() or "std_msgs/msg/String"
+    backend = rt.detect_backend()["backend"]
+    empty = {
+        "running": False,
+        "latest": {},
+        "messages": [],
+        "received": 0,
+        "backend": backend,
+    }
+    if action not in {"once", "start", "stop"}:
+        return {
+            **empty,
+            "report": f"topic subscriber FAILED: action must be once, start, or stop, got {action!r}",
+        }
+    if action == "stop":
+        result = rt.stop_topic_subscriber(topic)
+        messages = list(result.get("messages") or [])
+        return {
+            **empty,
+            "latest": messages[-1] if messages else {},
+            "messages": messages,
+            "received": int(result.get("received") or len(messages)),
+            "backend": result.get("backend", backend),
+            "report": (
+                f"stopped topic subscriber on {topic}"
+                if result.get("ok")
+                else _report(result, f"stop topic subscriber on {topic}")
+            ),
+        }
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", node_name):
+        return {
+            **empty,
+            "report": (
+                "topic subscriber FAILED: node_name must start with a letter or "
+                "underscore and contain only letters, numbers, and underscores"
+            ),
+        }
+    try:
+        history = max(1, min(100, int(ctx.get("history") or 10)))
+    except (TypeError, ValueError):
+        history = 10
+    try:
+        timeout = max(0.1, float(ctx.get("timeout") or 10.0))
+    except (TypeError, ValueError):
+        timeout = 10.0
+    if action == "once":
+        result = rt.run_topic_subscriber_once(
+            topic=topic,
+            message_type=msg_type,
+            node_name=node_name,
+            timeout=timeout,
+        )
+        messages = list(result.get("messages") or [])
+        return {
+            "running": False,
+            "latest": messages[-1] if messages else {},
+            "messages": messages,
+            "received": int(result.get("received") or len(messages)),
+            "backend": result.get("backend", backend),
+            "report": (
+                f"received one message as /{node_name} from {topic} via {result.get('backend', backend)}"
+                if result.get("ok")
+                else _report(result, f"subscribe once to {topic}")
+            ),
+        }
+    result = rt.start_topic_subscriber(
+        topic=topic,
+        message_type=msg_type,
+        node_name=node_name,
+        history=history,
+    )
+    if not result.get("ok"):
+        return {
+            **empty,
+            "backend": result.get("backend", backend),
+            "report": _report(result, f"start topic subscriber on {topic}"),
+        }
+    return {
+        **empty,
+        "running": True,
+        "backend": result.get("backend", backend),
+        "report": (
+            f"topic subscriber running as /{node_name} on {topic} ({msg_type}) "
+            f"via {result.get('backend', backend)}"
+        ),
+    }
 
 
 @node(
     name="ROS2TopicPublisher", component="topics",
     category=_CATEGORY,
-    description="Start or stop a managed continuous publisher for any ROS 2 topic and message type.",
+    description="Publish once, start continuously, or stop a publisher for any ROS 2 topic and message type.",
     inputs={
         "trigger": AnyPort,
-        "action": Enum(["start", "stop"], default="start"),
+        "action": Enum(["once", "start", "stop"], default="start"),
+        "node_name": Text(default=""),
         "topic": Text(default="/chatter"),
         "msg_type": Text(default="std_msgs/msg/String"),
         "payload": Text(default="data: hello from Blacknode"),
+        "count": Int(default=1),
         "rate_hz": Float(default=2.0),
     },
     outputs={"running": Bool, "backend": Text, "report": Text},
@@ -161,13 +253,14 @@ def ros2_topic_publisher(ctx: dict) -> dict:
 
 def _run_topic_publisher(ctx: dict) -> dict:
     action = str(ctx.get("action") or "start").strip().lower()
+    node_name = str(ctx.get("node_name") or "").strip().lstrip("/")
     topic = str(ctx.get("topic") or "/chatter").strip() or "/chatter"
     backend = rt.detect_backend()["backend"]
-    if action not in {"start", "stop"}:
+    if action not in {"once", "start", "stop"}:
         return {
             "running": False,
             "backend": backend,
-            "report": f"topic publisher FAILED: action must be start or stop, got {action!r}",
+            "report": f"topic publisher FAILED: action must be once, start, or stop, got {action!r}",
         }
     key = f"topic-publisher:{topic}"
     if action == "stop":
@@ -184,6 +277,34 @@ def _run_topic_publisher(ctx: dict) -> dict:
             "backend": result["backend"],
             "report": _report(result, f"stop topic publisher on {topic}"),
         }
+    if node_name and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", node_name):
+        return {
+            "running": False,
+            "backend": backend,
+            "report": (
+                "topic publisher FAILED: node_name must start with a letter or "
+                "underscore and contain only letters, numbers, and underscores"
+            ),
+        }
+    msg_type = str(ctx.get("msg_type") or "std_msgs/msg/String").strip() or "std_msgs/msg/String"
+    payload = str(ctx.get("payload") or "data: hello from Blacknode").strip()
+    if action == "once":
+        try:
+            count = max(1, int(ctx.get("count") or 1))
+        except (TypeError, ValueError):
+            count = 1
+        args = ["topic", "pub"]
+        args.extend(["--once"] if count == 1 else ["--times", str(count)])
+        args.extend(["--wait-matching-subscriptions", "0"])
+        if node_name:
+            args.extend(["--node-name", node_name])
+        args.extend([topic, msg_type, payload])
+        result = rt.run_ros2(args, timeout=30 + count)
+        return {
+            "running": False,
+            "backend": result.get("backend", backend),
+            "report": _report(result, f"publish {count}x to {topic}"),
+        }
     try:
         rate_hz = float(ctx.get("rate_hz", 2.0))
     except (TypeError, ValueError):
@@ -194,18 +315,17 @@ def _run_topic_publisher(ctx: dict) -> dict:
             "backend": backend,
             "report": "topic publisher FAILED: rate_hz must be greater than 0",
         }
-    msg_type = str(ctx.get("msg_type") or "std_msgs/msg/String").strip() or "std_msgs/msg/String"
-    payload = str(ctx.get("payload") or "data: hello from Blacknode").strip()
     # Docker exec does not return the child PID, and matching the complete
     # command is unreliable when structured payload punctuation is interpreted
     # as a regular expression. A managed publisher is topic-scoped, so replace
     # every older publisher for this exact topic before starting the new one.
     replace_pattern = "" if backend == "native" else f"ros2 topic pub .* {topic} "
     rt.stop_ros2_managed(key, pattern=replace_pattern)
-    result = rt.run_ros2_managed(
-        key,
-        ["topic", "pub", "-r", str(rate_hz), topic, msg_type, payload],
-    )
+    args = ["topic", "pub", "-r", str(rate_hz)]
+    if node_name:
+        args.extend(["--node-name", node_name])
+    args.extend([topic, msg_type, payload])
+    result = rt.run_ros2_managed(key, args)
     if not result["ok"]:
         return {
             "running": False,
@@ -221,7 +341,10 @@ def _run_topic_publisher(ctx: dict) -> dict:
             return {
                 "running": True,
                 "backend": result["backend"],
-                "report": f"topic publisher running on {topic} ({msg_type}) at {rate_hz:g} Hz via {result['backend']}",
+                "report": (
+                    f"topic publisher running{f' as /{node_name}' if node_name else ''} "
+                    f"on {topic} ({msg_type}) at {rate_hz:g} Hz via {result['backend']}"
+                ),
             }
         time.sleep(1)
     return {
@@ -364,6 +487,173 @@ def ros2_topic_relay(ctx: dict) -> dict:
 
 
 @node(
+    name="ROS2WorkspaceBuild", component="processes",
+    category=_CATEGORY,
+    description="Build a local colcon workspace for ROS2Run and ROS2Launch.",
+    inputs={
+        "trigger": AnyPort,
+        "workspace_path": Text(default=""),
+        "packages_select": Text(default=""),
+        "timeout": Float(default=300.0),
+    },
+    outputs={
+        "built": Bool,
+        "backend": Text,
+        "workspace_path": Text,
+        "setup_path": Text,
+        "logs": List,
+        "report": Text,
+    },
+    primary_inputs=["trigger", "workspace_path", "packages_select"],
+    primary_outputs=["built", "logs", "report"],
+)
+def ros2_workspace_build(ctx: dict) -> dict:
+    workspace_path = str(ctx.get("workspace_path") or "").strip()
+    try:
+        packages = shlex.split(str(ctx.get("packages_select") or ""))
+    except ValueError as exc:
+        backend = rt.detect_backend()["backend"]
+        return {
+            "built": False,
+            "backend": backend,
+            "workspace_path": workspace_path,
+            "setup_path": "",
+            "logs": [],
+            "report": f"ROS 2 workspace build FAILED: invalid packages_select: {exc}",
+        }
+    try:
+        timeout = max(30.0, float(ctx.get("timeout") or 300.0))
+    except (TypeError, ValueError):
+        timeout = 300.0
+    result = rt.build_ros2_workspace(
+        workspace_path,
+        packages_select=packages,
+        timeout=timeout,
+    )
+    logs = [
+        line
+        for line in "\n".join(
+            part for part in (result.get("stdout", ""), result.get("stderr", "")) if part
+        ).splitlines()[-100:]
+        if line.strip()
+    ]
+    if not result.get("ok"):
+        return {
+            "built": False,
+            "backend": result.get("backend", "none"),
+            "workspace_path": result.get("workspace_path", workspace_path),
+            "setup_path": result.get("setup_path", ""),
+            "logs": logs,
+            "report": _report(result, "ROS 2 workspace build"),
+        }
+    selected = f" ({', '.join(packages)})" if packages else ""
+    return {
+        "built": True,
+        "backend": result.get("backend", "none"),
+        "workspace_path": result.get("workspace_path", workspace_path),
+        "setup_path": result.get("setup_path", ""),
+        "logs": logs,
+        "report": (
+            f"ROS 2 workspace built{selected} at {result.get('workspace_path', workspace_path)} "
+            f"via {result.get('backend', 'none')} backend"
+        ),
+    }
+
+
+@node(
+    name="ROS2PythonNode", component="processes",
+    category=_CATEGORY,
+    description="Start or stop a standalone Python rclpy script from a file or inline code.",
+    inputs={
+        "trigger": AnyPort,
+        "action": Enum(["start", "stop"], default="start"),
+        "run_id": Text(default="ros2_python_node"),
+        "source_mode": Enum(["file", "inline"], default="file"),
+        "script_path": Text(default=""),
+        "code": Text(default=""),
+        "arguments": Text(default=""),
+    },
+    outputs={
+        "running": Bool,
+        "run_id": Text,
+        "backend": Text,
+        "script": Text,
+        "logs": List,
+        "report": Text,
+    },
+    primary_inputs=["trigger", "action", "run_id", "source_mode", "script_path"],
+    primary_outputs=["running", "logs", "report"],
+)
+def ros2_python_node(ctx: dict) -> dict:
+    action = str(ctx.get("action") or "start").strip().lower()
+    run_id = _managed_id(ctx.get("run_id"), "ros2_python_node")
+    source_mode = str(ctx.get("source_mode") or "file").strip().lower()
+    script_path = str(ctx.get("script_path") or "").strip()
+    code = str(ctx.get("code") or "")
+    backend = rt.detect_backend()["backend"]
+    script = script_path if source_mode == "file" else "inline code"
+    base = {
+        "running": False,
+        "run_id": run_id,
+        "backend": backend,
+        "script": script,
+        "logs": [],
+    }
+    if action == "stop":
+        result = rt.stop_ros2_python_node(run_id)
+        return {
+            **base,
+            "backend": result.get("backend", backend),
+            "report": (
+                f"stopped ROS 2 Python node {run_id}"
+                if result.get("ok")
+                else _report(result, f"stop ROS 2 Python node {run_id}")
+            ),
+        }
+    if action != "start":
+        return {
+            **base,
+            "report": f"ROS 2 Python node FAILED: action must be start or stop, got {action!r}",
+        }
+    if source_mode not in {"file", "inline"}:
+        return {
+            **base,
+            "report": f"ROS 2 Python node FAILED: source_mode must be file or inline, got {source_mode!r}",
+        }
+    if source_mode == "file" and not script_path:
+        return {**base, "report": "ROS 2 Python node FAILED: set script_path for file mode"}
+    if source_mode == "inline" and not code.strip():
+        return {**base, "report": "ROS 2 Python node FAILED: enter code for inline mode"}
+    try:
+        arguments = shlex.split(str(ctx.get("arguments") or ""))
+    except ValueError as exc:
+        return {**base, "report": f"ROS 2 Python node FAILED: invalid arguments: {exc}"}
+    result = rt.start_ros2_python_node(
+        run_id=run_id,
+        source_mode=source_mode,
+        script_path=script_path,
+        code=code,
+        arguments=arguments,
+    )
+    if not result.get("ok"):
+        return {
+            **base,
+            "backend": result.get("backend", backend),
+            "report": _report(result, f"start ROS 2 Python node {run_id}"),
+        }
+    return {
+        **base,
+        "running": True,
+        "backend": result.get("backend", backend),
+        "script": result.get("script", script),
+        "report": (
+            f"ROS 2 Python node {run_id} running from {result.get('script', script)} "
+            f"via {result.get('backend', backend)}"
+        ),
+    }
+
+
+@node(
     name="ROS2Launch", component="processes",
     category=_CATEGORY,
     description="Start or stop a background `ros2 launch ...` process.",
@@ -373,6 +663,7 @@ def ros2_topic_relay(ctx: dict) -> dict:
         "run_id": Text(default="ros2_launch"),
         "package": Text(default=""),
         "launch_file": Text(default=""),
+        "workspace_path": Text(default=""),
         "arguments": Text(default=""),
         "expected_topic": Text(default=""),
         "wait_seconds": Float(default=0.0),
@@ -385,6 +676,7 @@ def ros2_launch(ctx: dict) -> dict:
     run_id = _managed_id(ctx.get("run_id"), "ros2_launch")
     package = str(ctx.get("package") or "").strip()
     launch_file = str(ctx.get("launch_file") or "").strip()
+    workspace_path = str(ctx.get("workspace_path") or "").strip()
 
     if action == "stop":
         pattern = str(ctx.get("stop_pattern") or "").strip() or f"ros2 launch {package}".strip() or "ros2 launch"
@@ -419,9 +711,11 @@ def ros2_launch(ctx: dict) -> dict:
             "report": f"ros2 launch FAILED: invalid arguments: {exc}",
         }
 
+    managed_kwargs = {"workspace_path": workspace_path} if workspace_path else {}
     result = rt.run_ros2_managed(
         run_id,
         ["launch", package, launch_file, *extra_args],
+        **managed_kwargs,
     )
     if not result["ok"]:
         return {
@@ -472,6 +766,7 @@ def ros2_launch(ctx: dict) -> dict:
         "run_id": Text(default="ros2_run"),
         "package": Text(default=""),
         "executable": Text(default=""),
+        "workspace_path": Text(default=""),
         "arguments": Text(default=""),
         "expected_topic": Text(default=""),
         "wait_seconds": Float(default=0.0),
@@ -483,6 +778,7 @@ def ros2_run(ctx: dict) -> dict:
     action = str(ctx.get("action") or "start").strip().lower()
     package = str(ctx.get("package") or "").strip()
     executable = str(ctx.get("executable") or "").strip()
+    workspace_path = str(ctx.get("workspace_path") or "").strip()
     pattern = " ".join(part for part in ("ros2", "run", package, executable) if part)
 
     if action == "stop":
@@ -502,7 +798,12 @@ def ros2_run(ctx: dict) -> dict:
     except ValueError as exc:
         return {"running": False, "run_id": run_id, "report": f"ros2 run FAILED: invalid arguments: {exc}"}
 
-    result = rt.run_ros2_managed(run_id, ["run", package, executable, *extra_args])
+    managed_kwargs = {"workspace_path": workspace_path} if workspace_path else {}
+    result = rt.run_ros2_managed(
+        run_id,
+        ["run", package, executable, *extra_args],
+        **managed_kwargs,
+    )
     if not result.get("ok"):
         return {"running": False, "run_id": run_id, "report": _report(result, f"start run {package} {executable}")}
 
@@ -550,6 +851,283 @@ def ros2_node_list(ctx: dict) -> dict:
     result = rt.run_ros2(["node", "list"], timeout=30)
     nodes = [line.strip() for line in result["stdout"].splitlines() if line.strip()] if result["ok"] else []
     return {"nodes": nodes, "report": _report(result, "node list")}
+
+
+_SYSTEM_TOPICS = {"/parameter_events", "/rosout"}
+
+
+def _typed_names(output: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for raw_line in str(output or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^(.*?)\s+\[(.*)]$", line)
+        if match:
+            name = match.group(1).strip()
+            message_types = [
+                item.strip()
+                for item in match.group(2).split(",")
+                if item.strip()
+            ]
+        else:
+            name = line
+            message_types = []
+        entries.append({"name": name, "types": message_types})
+    return entries
+
+
+def _in_namespace(name: str, namespace: str) -> bool:
+    selected = str(namespace or "").strip()
+    if not selected or selected == "/":
+        return True
+    if not selected.startswith("/"):
+        selected = f"/{selected}"
+    selected = selected.rstrip("/")
+    return name == selected or name.startswith(f"{selected}/")
+
+
+def _qualified_ros_node(name: str, namespace: str) -> str:
+    node_name = str(name or "").strip()
+    node_namespace = str(namespace or "/").strip() or "/"
+    if node_name.startswith("/"):
+        return re.sub(r"/+", "/", node_name)
+    if node_namespace == "/":
+        return f"/{node_name}" if node_name else "/"
+    return re.sub(r"/+", "/", f"/{node_namespace.strip('/')}/{node_name}")
+
+
+def _parse_topic_endpoint_details(output: str) -> dict[str, Any]:
+    text = str(output or "")
+    publisher_match = re.search(r"^Publisher count:\s*(\d+)", text, re.MULTILINE)
+    subscriber_match = re.search(r"^Subscription count:\s*(\d+)", text, re.MULTILINE)
+    publishers: list[dict[str, Any]] = []
+    subscribers: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    qos: dict[str, str] | None = None
+
+    def finish() -> None:
+        nonlocal current, qos
+        if not current:
+            return
+        current["node"] = _qualified_ros_node(
+            str(current.pop("node_name", "")),
+            str(current.pop("node_namespace", "/")),
+        )
+        endpoint_type = str(current.pop("endpoint_type", "")).lower()
+        if qos:
+            current["qos"] = qos
+        if endpoint_type == "publisher":
+            publishers.append(current)
+        elif endpoint_type in {"subscription", "subscriber"}:
+            subscribers.append(current)
+        current = None
+        qos = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("Node name:"):
+            finish()
+            current = {"node_name": line.partition(":")[2].strip()}
+            continue
+        if current is None:
+            continue
+        if line.startswith("QoS profile:"):
+            qos = {}
+            continue
+        if ":" not in line:
+            continue
+        key, value = (part.strip() for part in line.split(":", 1))
+        normalized = key.lower().replace(" ", "_").replace("(", "").replace(")", "")
+        if qos is not None and normalized in {
+            "reliability", "history_depth", "durability", "lifespan",
+            "deadline", "liveliness", "liveliness_lease_duration",
+        }:
+            qos[normalized] = value
+        elif normalized in {"node_namespace", "topic_type", "endpoint_type", "gid"}:
+            current[normalized] = value
+    finish()
+    return {
+        "publisher_count": int(publisher_match.group(1)) if publisher_match else len(publishers),
+        "subscription_count": int(subscriber_match.group(1)) if subscriber_match else len(subscribers),
+        "publishers": publishers,
+        "subscribers": subscribers,
+    }
+
+
+@node(
+    name="ROS2GraphExplorer", component="diagnostics",
+    category=_CATEGORY,
+    description=(
+        "Capture a structured, read-only ROS 2 topology: nodes, typed topics, "
+        "services, publisher/subscriber endpoints, and QoS summaries."
+    ),
+    inputs={
+        "trigger": AnyPort,
+        "namespace": Text(default="/"),
+        "include_system": Bool(default=False),
+        "include_endpoints": Bool(default=True),
+        "max_topics": Int(default=40),
+        "timeout": Float(default=8.0),
+    },
+    outputs={
+        "available": Bool,
+        "backend": Text,
+        "graph": Dict,
+        "nodes": List,
+        "topics": List,
+        "services": List,
+        "report": Text,
+    },
+)
+def ros2_graph_explorer(ctx: dict) -> dict:
+    backend = rt.detect_backend()["backend"]
+    empty_graph = {
+        "schema_version": 1,
+        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "backend": backend,
+        "namespace": str(ctx.get("namespace") or "/"),
+        "nodes": [],
+        "topics": [],
+        "services": [],
+        "errors": [],
+        "truncated": False,
+    }
+    if backend == "none":
+        detail = rt.detect_backend().get("detail", "ROS 2 is unavailable")
+        return {
+            "available": False,
+            "backend": backend,
+            "graph": {**empty_graph, "errors": [detail]},
+            "nodes": [],
+            "topics": [],
+            "services": [],
+            "report": f"ROS 2 graph unavailable: {detail}",
+        }
+
+    namespace = str(ctx.get("namespace") or "/").strip() or "/"
+    include_system = bool(ctx.get("include_system", False))
+    include_endpoints = bool(ctx.get("include_endpoints", True))
+    try:
+        max_topics = min(200, max(1, int(ctx.get("max_topics") or 40)))
+    except (TypeError, ValueError):
+        max_topics = 40
+    try:
+        timeout = min(30.0, max(1.0, float(ctx.get("timeout") or 8.0)))
+    except (TypeError, ValueError):
+        timeout = 8.0
+
+    node_result = rt.run_ros2(["node", "list"], timeout=timeout)
+    topic_result = rt.run_ros2(["topic", "list", "-t"], timeout=timeout)
+    service_result = rt.run_ros2(["service", "list", "-t"], timeout=timeout)
+    results = [node_result, topic_result, service_result]
+    errors = [
+        str(result.get("error") or result.get("stderr") or "ROS graph query failed")
+        for result in results
+        if not result.get("ok")
+    ]
+    nodes = sorted({
+        line.strip()
+        for line in node_result.get("stdout", "").splitlines()
+        if line.strip() and _in_namespace(line.strip(), namespace)
+    }) if node_result.get("ok") else []
+    topics = [
+        entry
+        for entry in _typed_names(topic_result.get("stdout", ""))
+        if _in_namespace(entry["name"], namespace)
+        and (include_system or entry["name"] not in _SYSTEM_TOPICS)
+    ] if topic_result.get("ok") else []
+    services = [
+        entry
+        for entry in _typed_names(service_result.get("stdout", ""))
+        if _in_namespace(entry["name"], namespace)
+    ] if service_result.get("ok") else []
+    topics.sort(key=lambda item: item["name"])
+    services.sort(key=lambda item: item["name"])
+    truncated = len(topics) > max_topics
+    topics = topics[:max_topics]
+
+    if include_endpoints and topics:
+        workers = min(8, len(topics))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    rt.run_ros2,
+                    ["topic", "info", "-v", topic["name"]],
+                    timeout,
+                ): topic
+                for topic in topics
+            }
+            for future in as_completed(futures):
+                topic = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001 - preserve partial graph
+                    topic.update({
+                        "publisher_count": 0,
+                        "subscription_count": 0,
+                        "publishers": [],
+                        "subscribers": [],
+                    })
+                    errors.append(f"{topic['name']}: {type(exc).__name__}: {exc}")
+                    continue
+                if result.get("ok"):
+                    topic.update(_parse_topic_endpoint_details(result.get("stdout", "")))
+                else:
+                    topic.update({
+                        "publisher_count": 0,
+                        "subscription_count": 0,
+                        "publishers": [],
+                        "subscribers": [],
+                    })
+                    errors.append(
+                        f"{topic['name']}: {result.get('error') or 'endpoint inspection failed'}"
+                    )
+    else:
+        for topic in topics:
+            topic.update({
+                "publisher_count": 0,
+                "subscription_count": 0,
+                "publishers": [],
+                "subscribers": [],
+            })
+
+    endpoint_nodes = {
+        endpoint.get("node", "")
+        for topic in topics
+        for key in ("publishers", "subscribers")
+        for endpoint in topic.get(key, [])
+        if endpoint.get("node")
+    }
+    nodes = sorted(set(nodes) | endpoint_nodes)
+    graph = {
+        **empty_graph,
+        "backend": next((result.get("backend") for result in results if result.get("backend")), backend),
+        "namespace": namespace,
+        "nodes": nodes,
+        "topics": topics,
+        "services": services,
+        "errors": errors[:50],
+        "truncated": truncated,
+    }
+    available = bool(any(result.get("ok") for result in results))
+    report = (
+        f"ROS 2 topology captured via {graph['backend']}: {len(nodes)} nodes, "
+        f"{len(topics)} topics, {len(services)} services"
+    )
+    if truncated:
+        report += f" (limited to {max_topics} topics)"
+    if errors:
+        report += f"; {len(errors)} query warning(s)"
+    return {
+        "available": available,
+        "backend": graph["backend"],
+        "graph": graph,
+        "nodes": nodes,
+        "topics": topics,
+        "services": services,
+        "report": report,
+    }
 
 
 @node(

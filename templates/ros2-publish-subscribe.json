@@ -36,20 +36,24 @@
       "type": "ROS2TopicPublisher",
       "params": {
         "action": "start",
+        "node_name": "blacknode_demo_publisher",
         "topic": "/blacknode_demo",
         "msg_type": "std_msgs/msg/String",
         "payload": "data: Blacknode ROS 2 roundtrip works",
+        "count": 1,
         "rate_hz": 5.0
       },
       "pos": [360, 340],
-      "inputs": ["trigger", "action", "topic", "msg_type", "payload", "rate_hz"],
+      "inputs": ["trigger", "action", "node_name", "topic", "msg_type", "payload", "count", "rate_hz"],
       "outputs": ["running", "backend", "report"],
       "input_types": {
         "trigger": "Any",
         "action": "Text",
+        "node_name": "Text",
         "topic": "Text",
         "msg_type": "Text",
         "payload": "Text",
+        "count": "Int",
         "rate_hz": "Float"
       },
       "output_types": {
@@ -59,12 +63,14 @@
       },
       "input_defaults": {
         "action": "start",
+        "node_name": "blacknode_demo_publisher",
         "topic": "/blacknode_demo",
         "msg_type": "std_msgs/msg/String",
         "payload": "data: Blacknode ROS 2 roundtrip works",
+        "count": 1,
         "rate_hz": 5.0
       },
-      "input_choices": {"action": ["start", "stop"]}
+      "input_choices": {"action": ["once", "start", "stop"]}
     },
     "subscriber": {
       "id": "subscriber",

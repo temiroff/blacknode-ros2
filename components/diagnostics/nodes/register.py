@@ -5,6 +5,7 @@ from .._implementation import register_implementation
 for _implementation in (
     ros2.ros2_system_check,
     ros2.ros2_node_list,
+    ros2.ros2_graph_explorer,
     ros2.ros2_interface_show,
     ros2.ros2_visual_dashboard,
     ros2_live.ros2_status,

@@ -54,10 +54,12 @@ TEMPLATE_DIR = PACKAGE_DIR / "templates"
 EXPECTED_NODES = [
     "ROS2BridgeEcho",
     "ROS2BridgePublish",
+    "ROS2GraphExplorer",
     "ROS2InterfaceShow",
     "ROS2Launch",
     "ROS2NodeList",
     "ROS2PackageExecutables",
+    "ROS2PythonNode",
     "ROS2RosbridgeServer",
     "ROS2RosbridgeStatus",
     "ROS2Run",
@@ -66,10 +68,11 @@ EXPECTED_NODES = [
     "ROS2SystemCheck",
     "ROS2TopicEcho",
     "ROS2TopicList",
-    "ROS2TopicPublish",
     "ROS2TopicPublisher",
     "ROS2TopicRelay",
+    "ROS2TopicSubscriber",
     "ROS2VisualDashboard",
+    "ROS2WorkspaceBuild",
 ]
 
 
@@ -90,13 +93,17 @@ EXPECTED_COMPONENT_NODES = {
     "topics": {
         "ROS2TopicEcho",
         "ROS2TopicList",
-        "ROS2TopicPublish",
         "ROS2TopicPublisher",
         "ROS2TopicRelay",
+        "ROS2TopicSubscriber",
     },
     "services": {"ROS2ServiceList"},
-    "processes": {"ROS2Launch", "ROS2PackageExecutables", "ROS2Run"},
+    "processes": {
+        "ROS2Launch", "ROS2PackageExecutables", "ROS2PythonNode", "ROS2Run",
+        "ROS2WorkspaceBuild",
+    },
     "diagnostics": {
+        "ROS2GraphExplorer",
         "ROS2InterfaceShow",
         "ROS2NodeList",
         "ROS2Status",
@@ -213,13 +220,62 @@ assert sorted(info.node_types) == {expected_nodes!r}
 def test_topic_publisher_has_generic_contract():
     publisher = _NODE_REGISTRY["ROS2TopicPublisher"]
 
+    assert "ROS2TopicPublish" not in _NODE_REGISTRY
     assert "ROS2DemoPublisher" not in _NODE_REGISTRY
     assert publisher._bn_inputs == [
-        "trigger", "action", "topic", "msg_type", "payload", "rate_hz",
+        "trigger", "action", "node_name", "topic", "msg_type", "payload", "count", "rate_hz",
     ]
+    assert publisher._bn_input_choices["action"] == ["once", "start", "stop"]
     assert publisher._bn_outputs == ["running", "backend", "report"]
     assert publisher._bn_hidden is False
     assert _NODE_REGISTRY["ROS2VisualDashboard"]._bn_hidden is True
+
+
+def test_topic_subscriber_has_managed_named_contract():
+    subscriber = _NODE_REGISTRY["ROS2TopicSubscriber"]
+
+    assert subscriber._bn_inputs == [
+        "trigger", "action", "node_name", "topic", "msg_type", "history", "timeout",
+    ]
+    assert subscriber._bn_input_choices["action"] == ["once", "start", "stop"]
+    assert subscriber._bn_outputs == [
+        "running", "latest", "messages", "received", "backend", "report",
+    ]
+    assert subscriber._bn_hidden is False
+
+
+def test_python_node_has_standalone_script_contract():
+    python_node = _NODE_REGISTRY["ROS2PythonNode"]
+
+    assert python_node._bn_inputs == [
+        "trigger", "action", "run_id", "source_mode", "script_path", "code", "arguments",
+    ]
+    assert python_node._bn_input_choices["action"] == ["start", "stop"]
+    assert python_node._bn_input_choices["source_mode"] == ["file", "inline"]
+    assert python_node._bn_outputs == [
+        "running", "run_id", "backend", "script", "logs", "report",
+    ]
+    assert python_node._bn_primary_inputs == [
+        "trigger", "action", "run_id", "source_mode", "script_path",
+    ]
+    assert python_node._bn_primary_outputs == ["running", "logs", "report"]
+    assert python_node._bn_hidden is False
+
+
+def test_workspace_build_has_colcon_contract():
+    build = _NODE_REGISTRY["ROS2WorkspaceBuild"]
+
+    assert build._bn_inputs == [
+        "trigger", "workspace_path", "packages_select", "timeout",
+    ]
+    assert build._bn_outputs == [
+        "built", "backend", "workspace_path", "setup_path", "logs", "report",
+    ]
+    assert build._bn_primary_inputs == [
+        "trigger", "workspace_path", "packages_select",
+    ]
+    assert build._bn_primary_outputs == ["built", "logs", "report"]
+    assert build._bn_hidden is False
 
 
 def test_topic_relay_has_generic_data_contract():
@@ -233,6 +289,20 @@ def test_topic_relay_has_generic_data_contract():
         "running", "backend", "source_topic", "destination_topic", "report",
     ]
     assert relay._bn_hidden is False
+
+
+def test_graph_explorer_has_read_only_topology_contract():
+    explorer = _NODE_REGISTRY["ROS2GraphExplorer"]
+
+    assert explorer._bn_inputs == [
+        "trigger", "namespace", "include_system", "include_endpoints",
+        "max_topics", "timeout",
+    ]
+    assert explorer._bn_outputs == [
+        "available", "backend", "graph", "nodes", "topics", "services",
+        "report",
+    ]
+    assert explorer._bn_hidden is False
 
 
 def test_capability_nodes_are_not_owned_by_the_integration_layer():
@@ -644,6 +714,10 @@ def test_templates_declare_exact_component_requirements():
             "blacknode-ros2/services",
             "blacknode-ros2/diagnostics",
         },
+        "ros2-graph-explorer.json": {
+            "blacknode-ros2/core",
+            "blacknode-ros2/diagnostics",
+        },
             "ros2-run-your-package.json": {
                 "blacknode-ros2/core",
                 "blacknode-ros2/topics",
@@ -676,6 +750,74 @@ def test_visual_dashboard_reports_roundtrip_pass():
     assert result["dashboard"].startswith("data:image/svg+xml;base64,")
 
 
+def test_graph_explorer_maps_publishers_topics_subscribers_and_qos(monkeypatch):
+    monkeypatch.setattr(
+        rt,
+        "detect_backend",
+        lambda refresh=False: {"backend": "native", "detail": "test"},
+    )
+
+    def fake_run(args, timeout=15.0):
+        outputs = {
+            ("node", "list"): "/camera_driver\n/viewer",
+            ("topic", "list", "-t"): (
+                "/camera/image_raw [sensor_msgs/msg/Image]\n"
+                "/parameter_events [rcl_interfaces/msg/ParameterEvent]\n"
+            ),
+            ("service", "list", "-t"): "/camera/set_power [std_srvs/srv/SetBool]",
+            ("topic", "info", "-v", "/camera/image_raw"): (
+                "Type: sensor_msgs/msg/Image\n"
+                "Publisher count: 1\n\n"
+                "Node name: camera_driver\n"
+                "Node namespace: /\n"
+                "Topic type: sensor_msgs/msg/Image\n"
+                "Endpoint type: PUBLISHER\n"
+                "GID: 01.02\n"
+                "QoS profile:\n"
+                "  Reliability: BEST_EFFORT\n"
+                "  Durability: VOLATILE\n\n"
+                "Subscription count: 1\n\n"
+                "Node name: viewer\n"
+                "Node namespace: /\n"
+                "Topic type: sensor_msgs/msg/Image\n"
+                "Endpoint type: SUBSCRIPTION\n"
+                "GID: 03.04\n"
+                "QoS profile:\n"
+                "  Reliability: BEST_EFFORT\n"
+                "  Durability: VOLATILE\n"
+            ),
+        }
+        key = tuple(args)
+        assert key in outputs, key
+        return {
+            "ok": True,
+            "backend": "native",
+            "stdout": outputs[key],
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(rt, "run_ros2", fake_run)
+    result = _NODE_REGISTRY["ROS2GraphExplorer"]({})
+
+    assert result["available"] is True
+    assert result["nodes"] == ["/camera_driver", "/viewer"]
+    assert len(result["topics"]) == 1
+    topic = result["topics"][0]
+    assert topic["name"] == "/camera/image_raw"
+    assert topic["types"] == ["sensor_msgs/msg/Image"]
+    assert topic["publisher_count"] == 1
+    assert topic["subscription_count"] == 1
+    assert topic["publishers"][0]["node"] == "/camera_driver"
+    assert topic["publishers"][0]["qos"]["reliability"] == "BEST_EFFORT"
+    assert topic["subscribers"][0]["node"] == "/viewer"
+    assert result["services"] == [{
+        "name": "/camera/set_power",
+        "types": ["std_srvs/srv/SetBool"],
+    }]
+    assert result["graph"]["truncated"] is False
+    assert "1 topics" in result["report"]
+
+
 def test_no_backend_is_structured_error(monkeypatch):
     monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "none", "detail": "x"})
     r = _NODE_REGISTRY["ROS2TopicList"]({"show_types": True})
@@ -706,6 +848,19 @@ def test_no_backend_is_structured_error(monkeypatch):
     r = _NODE_REGISTRY["ROS2Run"]({"package": "demo_nodes_cpp", "executable": "talker"})
     assert r["running"] is False
     assert "FAILED" in r["report"]
+
+    r = _NODE_REGISTRY["ROS2PythonNode"]({
+        "source_mode": "inline",
+        "code": "print('hello')",
+    })
+    assert r["running"] is False
+    assert r["backend"] == "none"
+    assert "FAILED" in r["report"]
+
+    r = _NODE_REGISTRY["ROS2GraphExplorer"]({})
+    assert r["available"] is False
+    assert r["graph"]["topics"] == []
+    assert r["graph"]["errors"]
 
 
 def test_system_check_reports_unavailable(monkeypatch):
@@ -790,6 +945,44 @@ def test_echo_keeps_partial_messages_on_timeout(monkeypatch):
     assert "received 2" in r["report"]
 
 
+def test_topic_publisher_once_builds_bounded_publish_command(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(
+        rt,
+        "run_ros2_managed",
+        lambda *args, **kwargs: pytest.fail("one-shot publishing must not start a managed process"),
+    )
+
+    def fake_run(args, timeout=15.0):
+        captured["args"] = args
+        captured["timeout"] = timeout
+        return {"ok": True, "backend": "native", "stdout": "published", "stderr": ""}
+
+    monkeypatch.setattr(rt, "run_ros2", fake_run)
+    result = _NODE_REGISTRY["ROS2TopicPublisher"]({
+        "action": "once",
+        "node_name": "event_once",
+        "topic": "/events",
+        "msg_type": "std_msgs/msg/String",
+        "payload": "data: bounded",
+        "count": 3,
+        "rate_hz": 0,
+    })
+
+    assert captured == {
+        "args": [
+            "topic", "pub", "--times", "3", "--wait-matching-subscriptions", "0",
+            "--node-name", "event_once",
+            "/events", "std_msgs/msg/String", "data: bounded",
+        ],
+        "timeout": 33,
+    }
+    assert result["running"] is False
+    assert result["backend"] == "native"
+    assert "publish 3x to /events OK" in result["report"]
+
+
 def test_topic_publisher_builds_managed_continuous_publish_command(monkeypatch):
     captured = {}
 
@@ -811,6 +1004,7 @@ def test_topic_publisher_builds_managed_continuous_publish_command(monkeypatch):
 
     result = _NODE_REGISTRY["ROS2TopicPublisher"]({
         "action": "start",
+        "node_name": "event_talker",
         "topic": "/events",
         "msg_type": "std_msgs/msg/String",
         "payload": "data: reusable",
@@ -820,13 +1014,14 @@ def test_topic_publisher_builds_managed_continuous_publish_command(monkeypatch):
     assert captured == {
         "key": "topic-publisher:/events",
         "args": [
-            "topic", "pub", "-r", "4.0", "/events",
+            "topic", "pub", "-r", "4.0", "--node-name", "event_talker", "/events",
             "std_msgs/msg/String", "data: reusable",
         ],
     }
     assert result["running"] is True
     assert result["backend"] == "native"
     assert "topic publisher running" in result["report"]
+    assert "/event_talker" in result["report"]
 
 
 def test_topic_publisher_start_replaces_older_docker_publishers_on_same_topic(monkeypatch):
@@ -900,6 +1095,103 @@ def test_topic_publisher_rejects_invalid_rate_without_starting(monkeypatch):
 
     assert result["running"] is False
     assert "rate_hz must be greater than 0" in result["report"]
+
+
+def test_topic_publisher_rejects_invalid_node_name_without_starting(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(
+        rt,
+        "run_ros2_managed",
+        lambda *args, **kwargs: pytest.fail("invalid configuration must not start a publisher"),
+    )
+
+    result = _NODE_REGISTRY["ROS2TopicPublisher"]({"node_name": "not/a/node"})
+
+    assert result["running"] is False
+    assert "node_name" in result["report"]
+
+
+def test_topic_subscriber_starts_named_managed_subscription(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "test"})
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "backend": "docker", "run_id": "topic-subscriber:/events"}
+
+    monkeypatch.setattr(rt, "start_topic_subscriber", fake_start)
+    result = _NODE_REGISTRY["ROS2TopicSubscriber"]({
+        "action": "start",
+        "node_name": "event_listener",
+        "topic": "/events",
+        "msg_type": "std_msgs/msg/String",
+        "history": 7,
+    })
+
+    assert captured == {
+        "topic": "/events",
+        "message_type": "std_msgs/msg/String",
+        "node_name": "event_listener",
+        "history": 7,
+    }
+    assert result["running"] is True
+    assert result["messages"] == []
+    assert "/event_listener" in result["report"]
+
+
+def test_topic_subscriber_once_returns_structured_message(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(rt, "run_topic_subscriber_once", lambda **kwargs: {
+        "ok": True,
+        "running": False,
+        "backend": "native",
+        "messages": [{"data": "hello"}],
+        "latest": {"data": "hello"},
+        "received": 1,
+    })
+
+    result = _NODE_REGISTRY["ROS2TopicSubscriber"]({
+        "action": "once",
+        "node_name": "event_listener",
+        "topic": "/events",
+        "timeout": 3.0,
+    })
+
+    assert result["running"] is False
+    assert result["latest"] == {"data": "hello"}
+    assert result["messages"] == [{"data": "hello"}]
+    assert result["received"] == 1
+
+
+def test_topic_subscriber_stop_is_scoped_to_topic(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "test"})
+
+    def fake_stop(topic):
+        captured["topic"] = topic
+        return {"ok": True, "backend": "docker", "messages": [{"data": "last"}], "received": 4}
+
+    monkeypatch.setattr(rt, "stop_topic_subscriber", fake_stop)
+    result = _NODE_REGISTRY["ROS2TopicSubscriber"]({"action": "stop", "topic": "/events"})
+
+    assert captured == {"topic": "/events"}
+    assert result["running"] is False
+    assert result["latest"] == {"data": "last"}
+    assert result["received"] == 4
+
+
+def test_topic_subscriber_rejects_invalid_node_name(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(
+        rt,
+        "start_topic_subscriber",
+        lambda **kwargs: pytest.fail("invalid configuration must not start a subscriber"),
+    )
+
+    result = _NODE_REGISTRY["ROS2TopicSubscriber"]({"node_name": "not/a/node"})
+
+    assert result["running"] is False
+    assert "node_name" in result["report"]
 
 
 def test_topic_relay_starts_type_preserving_managed_service(monkeypatch):
@@ -991,6 +1283,179 @@ def test_topic_relay_stop_is_scoped_to_run_id(monkeypatch):
     assert result["backend"] == "docker"
 
 
+def test_python_node_starts_file_with_parsed_arguments(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "test"})
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "running": True,
+            "backend": "docker",
+            "run_id": "tutorial_node",
+            "script": "tutorials/ros2/my_first_standalone_node.py",
+        }
+
+    monkeypatch.setattr(rt, "start_ros2_python_node", fake_start)
+    result = _NODE_REGISTRY["ROS2PythonNode"]({
+        "run_id": "tutorial node",
+        "source_mode": "file",
+        "script_path": "tutorials/ros2/my_first_standalone_node.py",
+        "arguments": "--robot 'front arm'",
+    })
+
+    assert captured == {
+        "run_id": "tutorial_node",
+        "source_mode": "file",
+        "script_path": "tutorials/ros2/my_first_standalone_node.py",
+        "code": "",
+        "arguments": ["--robot", "front arm"],
+    }
+    assert result["running"] is True
+    assert result["backend"] == "docker"
+    assert result["run_id"] == "tutorial_node"
+
+
+def test_python_node_starts_inline_code(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(
+        rt,
+        "start_ros2_python_node",
+        lambda **kwargs: captured.update(kwargs) or {
+            "ok": True,
+            "running": True,
+            "backend": "native",
+            "run_id": "inline_node",
+            "script": "inline code",
+        },
+    )
+    result = _NODE_REGISTRY["ROS2PythonNode"]({
+        "run_id": "inline_node",
+        "source_mode": "inline",
+        "code": "import rclpy\n",
+    })
+
+    assert captured["source_mode"] == "inline"
+    assert captured["code"] == "import rclpy\n"
+    assert result["running"] is True
+    assert result["script"] == "inline code"
+
+
+def test_python_node_stop_is_scoped_to_run_id(monkeypatch):
+    captured = []
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "test"})
+    monkeypatch.setattr(
+        rt,
+        "stop_ros2_python_node",
+        lambda run_id: captured.append(run_id) or {"ok": True, "backend": "docker", "stopped": 1},
+    )
+
+    result = _NODE_REGISTRY["ROS2PythonNode"]({"action": "stop", "run_id": "tutorial node"})
+
+    assert captured == ["tutorial_node"]
+    assert result["running"] is False
+    assert result["run_id"] == "tutorial_node"
+
+
+def test_python_node_requires_selected_source(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+    monkeypatch.setattr(
+        rt,
+        "start_ros2_python_node",
+        lambda **kwargs: pytest.fail("missing source must not start a process"),
+    )
+
+    file_result = _NODE_REGISTRY["ROS2PythonNode"]({"source_mode": "file", "script_path": ""})
+    inline_result = _NODE_REGISTRY["ROS2PythonNode"]({"source_mode": "inline", "code": ""})
+
+    assert file_result["running"] is False
+    assert "script_path" in file_result["report"]
+    assert inline_result["running"] is False
+    assert "enter code" in inline_result["report"]
+
+
+def test_python_node_resolves_workspace_relative_file_from_editor_server(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    server_dir = workspace / "editor-server"
+    script = workspace / "tutorials" / "ros2" / "node.py"
+    server_dir.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    script.write_text("print('hello')\n", encoding="utf-8")
+    monkeypatch.chdir(server_dir)
+
+    resolved, error = rt._python_node_source(
+        source_mode="file",
+        script_path="tutorials/ros2/node.py",
+        code="",
+        run_id="tutorial",
+    )
+
+    assert error == ""
+    assert resolved == script.resolve()
+
+
+def test_workspace_build_resolves_editor_relative_path_and_reports_logs(monkeypatch, tmp_path):
+    workspace_root = tmp_path / "workspace"
+    server_dir = workspace_root / "editor-server"
+    ros_workspace = workspace_root / "tutorials" / "ros2" / "lesson_04_workspace"
+    package_dir = ros_workspace / "src" / "lesson_04_package"
+    server_dir.mkdir(parents=True)
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.xml").write_text("<package/>", encoding="utf-8")
+    monkeypatch.chdir(server_dir)
+
+    captured = {}
+
+    def fake_build(workspace_path, *, packages_select=None, timeout=300.0):
+        captured.update(
+            workspace_path=workspace_path,
+            packages_select=packages_select,
+            timeout=timeout,
+        )
+        return {
+            "ok": True,
+            "backend": "docker",
+            "workspace_path": str(ros_workspace.resolve()),
+            "setup_path": "/tmp/workspace/install/setup.bash",
+            "stdout": "Starting >>> lesson_04_package\nFinished <<< lesson_04_package",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(rt, "build_ros2_workspace", fake_build)
+    result = _NODE_REGISTRY["ROS2WorkspaceBuild"]({
+        "workspace_path": "tutorials/ros2/lesson_04_workspace",
+        "packages_select": "lesson_04_package",
+        "timeout": 120,
+    })
+
+    assert result["built"] is True
+    assert result["backend"] == "docker"
+    assert result["workspace_path"] == str(ros_workspace.resolve())
+    assert result["logs"][-1] == "Finished <<< lesson_04_package"
+    assert captured == {
+        "workspace_path": "tutorials/ros2/lesson_04_workspace",
+        "packages_select": ["lesson_04_package"],
+        "timeout": 120.0,
+    }
+
+
+def test_workspace_path_resolution_requires_colcon_workspace_shape(monkeypatch, tmp_path):
+    workspace_root = tmp_path / "workspace"
+    server_dir = workspace_root / "editor-server"
+    package_dir = workspace_root / "tutorials" / "ros2_ws" / "src" / "demo"
+    server_dir.mkdir(parents=True)
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.xml").write_text("<package/>", encoding="utf-8")
+    monkeypatch.chdir(server_dir)
+
+    resolved, error = rt.resolve_workspace_path("tutorials/ros2_ws")
+
+    assert error == ""
+    assert resolved == (workspace_root / "tutorials" / "ros2_ws").resolve()
+
+
 def test_launch_builds_ros2_launch_command(monkeypatch):
     captured = {}
 
@@ -1017,6 +1482,27 @@ def test_launch_builds_ros2_launch_command(monkeypatch):
         "view:=false",
     ]
     assert "launch running" in result["report"]
+
+
+def test_launch_forwards_local_workspace_overlay(monkeypatch):
+    captured = {}
+
+    def fake_managed(key, args, **kwargs):
+        captured.update(key=key, args=args, kwargs=kwargs)
+        return {"ok": True, "backend": "docker"}
+
+    monkeypatch.setattr(rt, "run_ros2_managed", fake_managed)
+    result = _NODE_REGISTRY["ROS2Launch"]({
+        "run_id": "lesson_launch",
+        "package": "lesson_04_package",
+        "launch_file": "lesson.launch.py",
+        "workspace_path": "tutorials/ros2/lesson_04_workspace",
+    })
+
+    assert result["launched"] is True
+    assert captured["kwargs"] == {
+        "workspace_path": "tutorials/ros2/lesson_04_workspace",
+    }
 
 
 def test_launch_stop_is_scoped_to_managed_run(monkeypatch):
@@ -1135,6 +1621,27 @@ def test_run_builds_ros2_run_command(monkeypatch):
     assert "ROS 2 run process running" in result["report"]
 
 
+def test_run_forwards_local_workspace_overlay(monkeypatch):
+    captured = {}
+
+    def fake_managed(key, args, **kwargs):
+        captured.update(key=key, args=args, kwargs=kwargs)
+        return {"ok": True, "backend": "docker"}
+
+    monkeypatch.setattr(rt, "run_ros2_managed", fake_managed)
+    result = _NODE_REGISTRY["ROS2Run"]({
+        "run_id": "lesson_04_publisher",
+        "package": "lesson_04_package",
+        "executable": "publisher",
+        "workspace_path": "tutorials/ros2/lesson_04_workspace",
+    })
+
+    assert result["running"] is True
+    assert captured["kwargs"] == {
+        "workspace_path": "tutorials/ros2/lesson_04_workspace",
+    }
+
+
 def test_run_waits_for_expected_topic(monkeypatch):
     monkeypatch.setattr(rt, "run_ros2_managed", lambda key, args: {"ok": True, "backend": "native"})
     monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15.0: {
@@ -1175,6 +1682,72 @@ def test_run_ros2_managed_docker_reports_missing_package_when_install_fails(monk
     assert "image_tools" in result["error"]
     assert "installing it automatically failed" in result["error"]
     assert not any(cmd[:3] == ["docker", "exec", "-d"] for cmd in calls)
+
+
+def test_build_ros2_workspace_copies_sources_and_runs_colcon_in_docker(monkeypatch, tmp_path):
+    workspace = tmp_path / "lesson_ws"
+    package = workspace / "src" / "lesson_package"
+    package.mkdir(parents=True)
+    (package / "package.xml").write_text("<package/>", encoding="utf-8")
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "x"})
+    monkeypatch.setattr(rt, "ensure_container", lambda: None)
+    monkeypatch.setattr(rt, "_ensure_container_colcon", lambda: None)
+    copied = {}
+    monkeypatch.setattr(
+        rt,
+        "_copy_to_container",
+        lambda host, destination: copied.update(host=host, destination=destination),
+    )
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append((cmd, timeout))
+        stdout = "Finished <<< lesson_package" if "colcon build" in cmd[-1] else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(rt, "_run", fake_run)
+    result = rt.build_ros2_workspace(
+        str(workspace),
+        packages_select=["lesson_package"],
+        timeout=90,
+    )
+
+    assert result["ok"] is True
+    assert result["backend"] == "docker"
+    assert copied["host"] == workspace / "src"
+    assert copied["destination"].startswith("/tmp/blacknode_ros2_workspace_lesson_ws_")
+    build_shells = [cmd[-1] for cmd, _timeout in calls if "colcon build" in cmd[-1]]
+    assert len(build_shells) == 1
+    assert "--packages-select lesson_package" in build_shells[0]
+    assert result["setup_path"].endswith("/install/setup.bash")
+
+
+def test_run_ros2_managed_sources_built_docker_workspace(monkeypatch, tmp_path):
+    workspace = tmp_path / "lesson_ws"
+    package = workspace / "src" / "lesson_package"
+    package.mkdir(parents=True)
+    (package / "package.xml").write_text("<package/>", encoding="utf-8")
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "docker", "detail": "x"})
+    monkeypatch.setattr(rt, "ensure_container", lambda: None)
+    monkeypatch.setattr(rt, "stop_ros2_managed", lambda key, pattern="": {"ok": True, "stopped": 0})
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(rt, "_run", fake_run)
+    result = rt.run_ros2_managed(
+        "lesson_publisher",
+        ["run", "lesson_package", "publisher"],
+        workspace_path=str(workspace),
+    )
+
+    assert result["ok"] is True
+    detached = next(cmd for cmd in calls if cmd[:3] == ["docker", "exec", "-d"])
+    assert "source /tmp/blacknode_ros2_workspace_lesson_ws_" in detached[-1]
+    assert "exec ros2 run lesson_package publisher" in detached[-1]
+    assert not any("apt-get install" in cmd[-1] for cmd in calls)
 
 
 def test_run_ros2_managed_docker_installs_missing_package_then_starts(monkeypatch):

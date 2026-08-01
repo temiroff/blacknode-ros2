@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import re
 import signal
 import shlex
@@ -23,10 +24,12 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +41,9 @@ STREAM_PORT_RANGE = os.environ.get("BLACKNODE_ROS2_STREAM_PORT_RANGE", "39000-39
 _CONTAINER_STREAM_SCRIPT = "/tmp/blacknode_ros2_image_stream_server.py"
 _CONTAINER_SNAPSHOT_SCRIPT = "/tmp/blacknode_ros2_image_snapshot.py"
 _CONTAINER_TOPIC_RELAY_SCRIPT = "/tmp/blacknode_ros2_topic_relay.py"
+_CONTAINER_TOPIC_SUBSCRIBER_SCRIPT = "/tmp/blacknode_ros2_topic_subscriber.py"
+_CONTAINER_PYTHON_NODE_PREFIX = "/tmp/blacknode_ros2_python_node_"
+_CONTAINER_WORKSPACE_PREFIX = "/tmp/blacknode_ros2_workspace_"
 
 _NO_BACKEND_HELP = (
     "ROS 2 is not available: no `ros2` on PATH and Docker is not installed. "
@@ -54,6 +60,8 @@ _backend_detection_lock = threading.Lock()
 _detached: list[subprocess.Popen] = []
 _managed_detached: dict[str, subprocess.Popen] = {}
 _managed_docker_patterns: dict[str, str] = {}
+_topic_subscribers: dict[str, dict[str, Any]] = {}
+_python_nodes: dict[str, dict[str, Any]] = {}
 _streams: dict[str, dict[str, Any]] = {}
 
 
@@ -80,10 +88,41 @@ def runtime_status() -> dict[str, Any]:
             live_runs.append({"run_id": run_id, "pid": proc.pid})
         else:
             _managed_detached.pop(run_id, None)
+    known_native_runs = {str(item.get("run_id") or "") for item in live_runs}
     live_runs.extend(
         {"run_id": run_id, "backend": "docker"}
         for run_id in sorted(_managed_docker_patterns)
+        if run_id not in known_native_runs
     )
+
+    node_outputs: list[dict[str, Any]] = []
+    for run_id, item in list(_topic_subscribers.items()):
+        proc = item.get("proc")
+        running = bool(proc is not None and proc.poll() is None)
+        messages = list(item.get("messages") or [])
+        errors = list(item.get("errors") or [])
+        latest = messages[-1] if messages else {}
+        report = (
+            f"subscribing as /{item.get('node_name', '')} on {item.get('topic', '')}; "
+            f"received {int(item.get('received') or 0)} message(s)"
+            if running
+            else f"subscriber stopped after {int(item.get('received') or 0)} message(s)"
+        )
+        if errors and not messages:
+            report = f"subscriber error: {errors[-1]}"
+        node_outputs.append({
+            "node_type": "ROS2TopicSubscriber",
+            "run_id": run_id,
+            "outputs": {
+                "running": running,
+                "latest": latest,
+                "messages": messages,
+                "received": int(item.get("received") or 0),
+                "backend": item.get("backend", ""),
+                "report": report,
+            },
+        })
+    node_outputs.extend(_python_node_runtime_outputs())
 
     live_detached = [proc for proc in _detached if proc.poll() is None]
     _detached[:] = live_detached
@@ -107,6 +146,7 @@ def runtime_status() -> dict[str, Any]:
         "backend": _passive_backend(),
         "streams": live_streams,
         "managed_runs": live_runs,
+        "node_outputs": node_outputs,
         "detached_count": len(live_detached),
         "continuous_follows": continuous_follows,
         "leader_followers": leader_followers,
@@ -352,6 +392,223 @@ def _copy_to_container(host_path: Path, container_path: str) -> str | None:
     return None
 
 
+def resolve_workspace_path(workspace_path: str) -> tuple[Path | None, str]:
+    """Resolve an editor workspace-relative ROS 2 workspace directory."""
+    value = str(workspace_path or "").strip()
+    if not value:
+        return None, "workspace_path is required"
+
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        relative = path
+        bases = [Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents]
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+        for base in bases:
+            candidate = (base / relative).resolve()
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+        path = next((candidate for candidate in candidates if candidate.is_dir()), candidates[0])
+    else:
+        path = path.resolve()
+
+    if not path.is_dir():
+        return None, f"ROS 2 workspace not found: {path}"
+    source_dir = path / "src"
+    if not source_dir.is_dir():
+        return None, f"ROS 2 workspace must contain a src directory: {source_dir}"
+    if not any(source_dir.rglob("package.xml")):
+        return None, f"no ROS 2 package.xml found below: {source_dir}"
+    return path, ""
+
+
+def _container_workspace_path(workspace: Path) -> str:
+    """Return a stable, shell-safe container path for one host workspace."""
+    digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:12]
+    name = re.sub(r"[^A-Za-z0-9_]+", "_", workspace.name).strip("_")[:32] or "workspace"
+    return f"{_CONTAINER_WORKSPACE_PREFIX}{name}_{digest}"
+
+
+def _native_workspace_setup(workspace: Path) -> Path | None:
+    candidates = (
+        workspace / "install" / "setup.bat",
+        workspace / "install" / "local_setup.bat",
+        workspace / "install" / "setup.bash",
+        workspace / "install" / "local_setup.bash",
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _ensure_container_colcon() -> str | None:
+    check = _run(
+        ["docker", "exec", CONTAINER, "bash", "-lc", "command -v colcon"],
+        15,
+    )
+    if check.returncode == 0:
+        return None
+    install = _run(
+        [
+            "docker", "exec", CONTAINER, "bash", "-lc",
+            (
+                "apt-get update && DEBIAN_FRONTEND=noninteractive "
+                "apt-get install -y python3-colcon-common-extensions"
+            ),
+        ],
+        300,
+    )
+    if install.returncode == 0:
+        return None
+    return (
+        install.stderr.strip()
+        or install.stdout.strip()
+        or "could not install colcon in the ROS 2 helper container"
+    )
+
+
+def build_ros2_workspace(
+    workspace_path: str,
+    *,
+    packages_select: list[str] | None = None,
+    timeout: float = 300.0,
+) -> dict[str, Any]:
+    """Build a local colcon workspace for the active native or Docker backend."""
+    workspace, error = resolve_workspace_path(workspace_path)
+    backend = detect_backend()["backend"]
+    if workspace is None:
+        return {
+            "ok": False,
+            "backend": backend,
+            "workspace_path": workspace_path,
+            "setup_path": "",
+            "stdout": "",
+            "stderr": "",
+            "error": error,
+        }
+    if backend == "none":
+        return {
+            "ok": False,
+            "backend": backend,
+            "workspace_path": str(workspace),
+            "setup_path": "",
+            "stdout": "",
+            "stderr": "",
+            "error": _NO_BACKEND_HELP,
+        }
+
+    package_names = [str(name).strip() for name in (packages_select or []) if str(name).strip()]
+    invalid = [name for name in package_names if not re.fullmatch(r"[a-z][a-z0-9_]*", name)]
+    if invalid:
+        return {
+            "ok": False,
+            "backend": backend,
+            "workspace_path": str(workspace),
+            "setup_path": "",
+            "stdout": "",
+            "stderr": "",
+            "error": f"invalid ROS 2 package name: {invalid[0]}",
+        }
+    build_args = ["colcon", "build", "--symlink-install"]
+    if package_names:
+        build_args.extend(["--packages-select", *package_names])
+
+    try:
+        if backend == "docker":
+            container_error = ensure_container() or _ensure_container_colcon()
+            if container_error:
+                return {
+                    "ok": False,
+                    "backend": backend,
+                    "workspace_path": str(workspace),
+                    "setup_path": "",
+                    "stdout": "",
+                    "stderr": "",
+                    "error": container_error,
+                }
+            container_workspace = _container_workspace_path(workspace)
+            prepared = _run(
+                [
+                    "docker", "exec", CONTAINER, "bash", "-lc",
+                    f"rm -rf -- {container_workspace} && mkdir -p -- {container_workspace}",
+                ],
+                30,
+            )
+            if prepared.returncode != 0:
+                message = prepared.stderr.strip() or "could not prepare ROS 2 container workspace"
+                return {
+                    "ok": False,
+                    "backend": backend,
+                    "workspace_path": str(workspace),
+                    "setup_path": "",
+                    "stdout": prepared.stdout.strip(),
+                    "stderr": prepared.stderr.strip(),
+                    "error": message,
+                }
+            copy_error = _copy_to_container(workspace / "src", container_workspace)
+            if copy_error:
+                return {
+                    "ok": False,
+                    "backend": backend,
+                    "workspace_path": str(workspace),
+                    "setup_path": "",
+                    "stdout": "",
+                    "stderr": copy_error,
+                    "error": copy_error,
+                }
+            shell = (
+                "source /opt/ros/$ROS_DISTRO/setup.bash && "
+                f"cd {container_workspace} && {shlex.join(build_args)}"
+            )
+            proc = _run(
+                ["docker", "exec", CONTAINER, "bash", "-lc", shell],
+                max(30.0, float(timeout)),
+            )
+            setup_path = f"{container_workspace}/install/setup.bash"
+        else:
+            proc = subprocess.run(
+                build_args,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=max(30.0, float(timeout)),
+            )
+            setup = _native_workspace_setup(workspace)
+            setup_path = str(setup) if setup else str(workspace / "install" / "setup.bash")
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "backend": backend,
+            "workspace_path": str(workspace),
+            "setup_path": "",
+            "stdout": "",
+            "stderr": "",
+            "error": f"colcon build timed out after {max(30.0, float(timeout)):g}s",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "backend": backend,
+            "workspace_path": str(workspace),
+            "setup_path": "",
+            "stdout": "",
+            "stderr": "",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    result = {
+        "ok": proc.returncode == 0,
+        "backend": backend,
+        "workspace_path": str(workspace),
+        "setup_path": setup_path,
+        "stdout": proc.stdout.strip(),
+        "stderr": proc.stderr.strip(),
+    }
+    if proc.returncode != 0:
+        result["error"] = result["stderr"] or result["stdout"] or f"colcon exited with code {proc.returncode}"
+    return result
+
+
 def _ensure_container_stream_deps() -> str | None:
     check = _run([
         "docker",
@@ -521,16 +778,53 @@ def stop_detached(pattern: str = "ros2 topic pub") -> dict[str, Any]:
     return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
 
 
-def run_ros2_managed(key: str, args: list[str]) -> dict[str, Any]:
-    """Start one named background ``ros2 <args>`` process, replacing any old one."""
+def run_ros2_managed(
+    key: str,
+    args: list[str],
+    *,
+    workspace_path: str = "",
+) -> dict[str, Any]:
+    """Start one named background ``ros2 <args>`` process, optionally in an overlay."""
     stop_ros2_managed(key, pattern=f"ros2 {shlex.join(args)}")
     backend = detect_backend()["backend"]
     if backend == "none":
         return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
+    workspace: Path | None = None
+    if str(workspace_path or "").strip():
+        workspace, workspace_error = resolve_workspace_path(workspace_path)
+        if workspace is None:
+            return {"ok": False, "backend": backend, "error": workspace_error}
     try:
         if backend == "native":
+            if workspace is None:
+                command = ["ros2", *args]
+            else:
+                setup = _native_workspace_setup(workspace)
+                if setup is None:
+                    return {
+                        "ok": False,
+                        "backend": backend,
+                        "error": (
+                            f"workspace is not built: {workspace}. "
+                            "Run ROS2WorkspaceBuild first."
+                        ),
+                    }
+                ros_command = subprocess.list2cmdline(["ros2", *args])
+                if setup.suffix.lower() == ".bat":
+                    command = [
+                        "cmd.exe", "/d", "/s", "/c",
+                        f'call "{setup}" && {ros_command}',
+                    ]
+                else:
+                    command = [
+                        "bash", "-lc",
+                        f"source {shlex.quote(str(setup))} && exec ros2 {shlex.join(args)}",
+                    ]
             proc = subprocess.Popen(
-                ["ros2", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
             _managed_detached[key] = proc
             return {"ok": True, "backend": backend, "pid": proc.pid}
@@ -545,12 +839,54 @@ def run_ros2_managed(key: str, args: list[str]) -> dict[str, Any]:
         # gets fixed automatically or fails immediately with an actionable
         # message, instead of surfacing as an opaque "no active publisher"
         # from whatever's downstream of this run.
-        if len(args) >= 2 and args[0] in {"run", "launch"}:
+        overlay_setup = ""
+        if workspace is not None:
+            container_workspace = _container_workspace_path(workspace)
+            overlay_setup = f"{container_workspace}/install/setup.bash"
+            setup_check = _run(
+                ["docker", "exec", CONTAINER, "test", "-f", overlay_setup],
+                15,
+            )
+            if setup_check.returncode != 0:
+                return {
+                    "ok": False,
+                    "backend": backend,
+                    "error": (
+                        f"workspace is not built in the ROS helper container: {workspace}. "
+                        "Run ROS2WorkspaceBuild first."
+                    ),
+                }
+        if len(args) >= 2 and args[0] in {"run", "launch"} and not overlay_setup:
             package = args[1]
             package_error = _ensure_container_package(package)
             if package_error:
                 return {"ok": False, "backend": backend, "error": package_error}
-        shell = f"source /opt/ros/$ROS_DISTRO/setup.bash && exec ros2 {shlex.join(args)}"
+        source_overlay = f"source {overlay_setup} && " if overlay_setup else ""
+        if len(args) >= 2 and args[0] in {"run", "launch"} and overlay_setup:
+            package = args[1]
+            package_check = _run(
+                [
+                    "docker", "exec", CONTAINER, "bash", "-lc",
+                    (
+                        "source /opt/ros/$ROS_DISTRO/setup.bash && "
+                        f"source {overlay_setup} && ros2 pkg prefix {shlex.quote(package)}"
+                    ),
+                ],
+                30,
+            )
+            if package_check.returncode != 0:
+                return {
+                    "ok": False,
+                    "backend": backend,
+                    "error": (
+                        package_check.stderr.strip()
+                        or f"ROS 2 package '{package}' is not available in workspace {workspace}"
+                    ),
+                }
+        shell = (
+            "source /opt/ros/$ROS_DISTRO/setup.bash && "
+            f"{source_overlay}exec ros2 {shlex.join(args)}"
+        )
         proc = _run(["docker", "exec", "-d", CONTAINER, "bash", "-lc", shell], 30)
         if proc.returncode != 0:
             return {"ok": False, "backend": backend, "error": proc.stderr.strip() or "docker exec failed"}
@@ -610,6 +946,276 @@ def ros2_managed_status(key: str) -> dict[str, Any]:
         "running": False,
         "backend": _passive_backend(),
     }
+
+
+def _safe_python_run_id(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "").strip()).strip("_")[:64]
+
+
+def _python_node_source(
+    *,
+    source_mode: str,
+    script_path: str,
+    code: str,
+    run_id: str,
+) -> tuple[Path | None, str]:
+    if source_mode == "file":
+        path = Path(script_path).expanduser()
+        if not path.is_absolute():
+            relative = path
+            bases = [Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents]
+            candidates: list[Path] = []
+            seen: set[Path] = set()
+            for base in bases:
+                candidate = (base / relative).resolve()
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                candidates.append(candidate)
+            path = next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+        else:
+            path = path.resolve()
+        if not path.is_file():
+            return None, f"Python script not found: {path}"
+        if path.suffix.lower() != ".py":
+            return None, "ROS 2 Python node files must use the .py extension"
+        try:
+            source = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return None, f"could not read Python script: {type(exc).__name__}: {exc}"
+    elif source_mode == "inline":
+        source = str(code or "")
+        if not source.strip():
+            return None, "inline Python code is empty"
+        directory = Path(tempfile.gettempdir()) / "blacknode-ros2-python-nodes"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{run_id}.py"
+        try:
+            path.write_text(source, encoding="utf-8")
+        except Exception as exc:
+            return None, f"could not prepare inline Python code: {type(exc).__name__}: {exc}"
+    else:
+        return None, f"source_mode must be file or inline, got {source_mode!r}"
+
+    try:
+        compile(source, str(path), "exec")
+    except SyntaxError as exc:
+        location = f"line {exc.lineno}" if exc.lineno else "unknown line"
+        return None, f"Python syntax error at {location}: {exc.msg}"
+    return path, ""
+
+
+def start_ros2_python_node(
+    *,
+    run_id: str,
+    source_mode: str,
+    script_path: str,
+    code: str,
+    arguments: list[str],
+) -> dict[str, Any]:
+    """Start a standalone ``rclpy`` script as one managed ROS 2 process."""
+    clean_id = _safe_python_run_id(run_id)
+    if not clean_id:
+        return {
+            "ok": False,
+            "backend": _passive_backend(),
+            "error": "run_id must contain a letter, number, underscore, or hyphen",
+        }
+    source, source_error = _python_node_source(
+        source_mode=source_mode,
+        script_path=script_path,
+        code=code,
+        run_id=clean_id,
+    )
+    if source is None:
+        return {"ok": False, "backend": _passive_backend(), "error": source_error}
+    backend = detect_backend()["backend"]
+    if backend == "none":
+        return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
+
+    stop_ros2_python_node(clean_id)
+    display_source = str(source if source_mode == "file" else "inline code")
+    try:
+        if backend == "docker":
+            error = ensure_container()
+            container_script = f"{_CONTAINER_PYTHON_NODE_PREFIX}{clean_id}.py"
+            if not error:
+                error = _copy_to_container(source, container_script)
+            if error:
+                return {"ok": False, "backend": backend, "error": error}
+            checked = _run(
+                [
+                    "docker", "exec", CONTAINER, "bash", "-lc",
+                    (
+                        "source /opt/ros/$ROS_DISTRO/setup.bash && "
+                        f"python3 -m py_compile {shlex.quote(container_script)}"
+                    ),
+                ],
+                30,
+            )
+            if checked.returncode != 0:
+                return {
+                    "ok": False,
+                    "backend": backend,
+                    "error": checked.stderr.strip() or "Python syntax validation failed in ROS Docker",
+                }
+            container_log = f"{_CONTAINER_PYTHON_NODE_PREFIX}{clean_id}.log"
+            command_prefix = f"python3 {container_script}"
+            shell = (
+                "source /opt/ros/$ROS_DISTRO/setup.bash && "
+                f"exec {command_prefix} {shlex.join(arguments)} "
+                f"> {shlex.quote(container_log)} 2>&1"
+            )
+            started = _run(
+                ["docker", "exec", "-d", CONTAINER, "bash", "-lc", shell],
+                30,
+            )
+            if started.returncode != 0:
+                return {
+                    "ok": False,
+                    "backend": backend,
+                    "error": started.stderr.strip() or "docker exec failed",
+                }
+            _managed_docker_patterns[clean_id] = re.escape(command_prefix)
+            log_location = container_log
+        else:
+            log_dir = Path(tempfile.gettempdir()) / "blacknode-ros2-python-nodes"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{clean_id}.log"
+            with log_path.open("w", encoding="utf-8") as log:
+                proc = subprocess.Popen(
+                    [sys.executable, str(source), *arguments],
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            _managed_detached[clean_id] = proc
+            log_location = str(log_path)
+    except Exception as exc:
+        return {"ok": False, "backend": backend, "error": f"{type(exc).__name__}: {exc}"}
+
+    _python_nodes[clean_id] = {
+        "backend": backend,
+        "run_id": clean_id,
+        "script": display_source,
+        "log_location": log_location,
+        "logs": [],
+        "running": True,
+        "last_log_poll": 0.0,
+    }
+
+    time.sleep(0.35)
+    status = ros2_managed_status(clean_id)
+    if not status.get("running"):
+        error = "ROS 2 Python node exited during startup"
+        if backend == "docker":
+            log_result = _run(
+                [
+                    "docker", "exec", CONTAINER, "bash", "-lc",
+                    f"tail -n 20 {_CONTAINER_PYTHON_NODE_PREFIX}{clean_id}.log 2>/dev/null || true",
+                ],
+                15,
+            )
+            if log_result.stdout.strip():
+                error += f": {log_result.stdout.strip()}"
+        else:
+            log_path = Path(tempfile.gettempdir()) / "blacknode-ros2-python-nodes" / f"{clean_id}.log"
+            if log_path.is_file():
+                detail = log_path.read_text(encoding="utf-8", errors="replace").strip()
+                if detail:
+                    error += f": {detail}"
+        stop_ros2_python_node(clean_id)
+        return {"ok": False, "backend": backend, "error": error}
+    return {
+        "ok": True,
+        "running": True,
+        "backend": backend,
+        "run_id": clean_id,
+        "script": display_source,
+    }
+
+
+def stop_ros2_python_node(run_id: str) -> dict[str, Any]:
+    """Stop one managed standalone Python node, including after editor reloads."""
+    clean_id = _safe_python_run_id(run_id)
+    if not clean_id:
+        return {
+            "ok": False,
+            "backend": _passive_backend(),
+            "stopped": 0,
+            "error": "run_id is required",
+        }
+    pattern = ""
+    if detect_backend()["backend"] == "docker":
+        pattern = re.escape(f"python3 {_CONTAINER_PYTHON_NODE_PREFIX}{clean_id}.py")
+    result = stop_ros2_managed(clean_id, pattern=pattern)
+    item = _python_nodes.get(clean_id)
+    if item is not None:
+        item["running"] = False
+        item["last_log_poll"] = 0.0
+        _refresh_python_node_record(item)
+        result["logs"] = list(item.get("logs") or [])
+    return result
+
+
+def _refresh_python_node_record(item: dict[str, Any]) -> None:
+    now = time.monotonic()
+    if now - float(item.get("last_log_poll") or 0.0) < 0.75:
+        return
+    item["last_log_poll"] = now
+    backend = str(item.get("backend") or "")
+    location = str(item.get("log_location") or "")
+    if backend == "docker" and location:
+        result = _run(
+            [
+                "docker", "exec", CONTAINER, "bash", "-lc",
+                f"tail -n 50 {shlex.quote(location)} 2>/dev/null || true",
+            ],
+            10,
+        )
+        if result.returncode == 0:
+            item["logs"] = [line for line in result.stdout.splitlines() if line.strip()]
+    elif location:
+        path = Path(location)
+        if path.is_file():
+            try:
+                item["logs"] = [
+                    line for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-50:]
+                    if line.strip()
+                ]
+            except Exception:
+                pass
+
+
+def _python_node_runtime_outputs() -> list[dict[str, Any]]:
+    outputs: list[dict[str, Any]] = []
+    for run_id, item in list(_python_nodes.items()):
+        running = bool(item.get("running"))
+        if running:
+            status = ros2_managed_status(run_id)
+            running = bool(status.get("running"))
+            item["running"] = running
+        _refresh_python_node_record(item)
+        logs = list(item.get("logs") or [])
+        script = str(item.get("script") or "")
+        backend = str(item.get("backend") or "")
+        outputs.append({
+            "node_type": "ROS2PythonNode",
+            "run_id": run_id,
+            "outputs": {
+                "running": running,
+                "run_id": run_id,
+                "backend": backend,
+                "script": script,
+                "logs": logs,
+                "report": (
+                    f"ROS 2 Python node {run_id} running from {script} via {backend}"
+                    if running
+                    else f"ROS 2 Python node {run_id} stopped"
+                ),
+            },
+        })
+    return outputs
 
 
 def inspect_topic_interfaces(
@@ -772,6 +1378,224 @@ def stop_ros2_managed(key: str, pattern: str = "") -> dict[str, Any]:
             return {"ok": False, "backend": backend, "stopped": stopped, "error": result.stderr.strip() or "pkill failed"}
         stopped += 1 if result.returncode == 0 else 0
     return {"ok": True, "backend": backend, "stopped": stopped}
+
+
+def _topic_subscriber_script() -> Path:
+    return Path(__file__).resolve().parents[1] / "scripts" / "ros2_topic_subscriber.py"
+
+
+def _read_topic_subscriber_output(key: str, stream: Any, *, error: bool = False) -> None:
+    """Drain one subscriber pipe without ever blocking the runtime status path."""
+    try:
+        for raw_line in iter(stream.readline, ""):
+            line = str(raw_line or "").strip()
+            if not line:
+                continue
+            item = _topic_subscribers.get(key)
+            if item is None:
+                break
+            if error:
+                item["errors"].append(line)
+                continue
+            try:
+                decoded = json.loads(line)
+                message = decoded.get("message") if isinstance(decoded, dict) else None
+            except json.JSONDecodeError:
+                item["errors"].append(line)
+                continue
+            if isinstance(message, dict):
+                item["messages"].append(message)
+                item["received"] = int(item.get("received") or 0) + 1
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
+def start_topic_subscriber(
+    *,
+    topic: str,
+    message_type: str,
+    node_name: str,
+    history: int = 10,
+    max_messages: int = 0,
+) -> dict[str, Any]:
+    """Start one named subscriber and retain a bounded structured message history."""
+    backend = detect_backend()["backend"]
+    if backend == "none":
+        return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
+    script = _topic_subscriber_script()
+    if not script.exists():
+        return {
+            "ok": False,
+            "backend": backend,
+            "error": f"topic subscriber helper not found: {script}",
+        }
+    interface = run_ros2(["interface", "show", message_type], timeout=15)
+    if not interface.get("ok"):
+        return {
+            "ok": False,
+            "backend": backend,
+            "error": (
+                f"ROS 2 message type '{message_type}' is unavailable: "
+                f"{interface.get('error') or interface.get('stderr') or 'interface lookup failed'}"
+            ),
+        }
+
+    key = f"topic-subscriber:{topic}"
+    stop_topic_subscriber(topic)
+    helper_args = [
+        "--node-name", node_name,
+        "--topic", topic,
+        "--message-type", message_type,
+        "--max-messages", str(max(0, int(max_messages))),
+    ]
+    command: list[str]
+    if backend == "docker":
+        error = ensure_container() or _copy_to_container(
+            script,
+            _CONTAINER_TOPIC_SUBSCRIBER_SCRIPT,
+        )
+        if error:
+            return {"ok": False, "backend": backend, "error": error}
+        shell = (
+            "source /opt/ros/$ROS_DISTRO/setup.bash && "
+            f"exec python3 {_CONTAINER_TOPIC_SUBSCRIBER_SCRIPT} {shlex.join(helper_args)}"
+        )
+        command = ["docker", "exec", CONTAINER, "bash", "-lc", shell]
+    else:
+        command = [sys.executable, str(script), *helper_args]
+
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        return {"ok": False, "backend": backend, "error": f"{type(exc).__name__}: {exc}"}
+
+    _managed_detached[key] = proc
+    if backend == "docker":
+        _managed_docker_patterns[key] = (
+            r"ros2_topic_subscriber\.py .*--topic " + re.escape(topic)
+        )
+    _topic_subscribers[key] = {
+        "proc": proc,
+        "backend": backend,
+        "topic": topic,
+        "message_type": message_type,
+        "node_name": node_name,
+        "messages": deque(maxlen=max(1, min(100, int(history)))),
+        "errors": deque(maxlen=20),
+        "received": 0,
+    }
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    threading.Thread(
+        target=_read_topic_subscriber_output,
+        args=(key, proc.stdout),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_read_topic_subscriber_output,
+        args=(key, proc.stderr),
+        kwargs={"error": True},
+        daemon=True,
+    ).start()
+
+    # Fail fast when imports, node creation, or the interface are invalid.
+    time.sleep(0.25)
+    if proc.poll() is not None and max_messages <= 0:
+        errors = list(_topic_subscribers.get(key, {}).get("errors") or [])
+        _managed_detached.pop(key, None)
+        _managed_docker_patterns.pop(key, None)
+        return {
+            "ok": False,
+            "backend": backend,
+            "error": errors[-1] if errors else "topic subscriber exited during startup",
+        }
+    return {"ok": True, "backend": backend, "run_id": key}
+
+
+def topic_subscriber_status(topic: str) -> dict[str, Any]:
+    key = f"topic-subscriber:{topic}"
+    item = _topic_subscribers.get(key)
+    if item is None:
+        return {
+            "ok": True,
+            "running": False,
+            "backend": _passive_backend(),
+            "messages": [],
+            "received": 0,
+        }
+    proc = item.get("proc")
+    messages = list(item.get("messages") or [])
+    errors = list(item.get("errors") or [])
+    return {
+        "ok": not (errors and not messages and proc is not None and proc.poll() is not None),
+        "running": bool(proc is not None and proc.poll() is None),
+        "backend": item.get("backend", ""),
+        "messages": messages,
+        "latest": messages[-1] if messages else {},
+        "received": int(item.get("received") or 0),
+        "error": errors[-1] if errors else "",
+    }
+
+
+def stop_topic_subscriber(topic: str) -> dict[str, Any]:
+    key = f"topic-subscriber:{topic}"
+    item = _topic_subscribers.get(key)
+    backend = detect_backend()["backend"]
+    pattern = ""
+    if backend == "docker":
+        pattern = r"ros2_topic_subscriber\.py .*--topic " + re.escape(topic)
+    result = stop_ros2_managed(key, pattern=pattern)
+    if item is not None:
+        result["messages"] = list(item.get("messages") or [])
+        result["received"] = int(item.get("received") or 0)
+    _topic_subscribers.pop(key, None)
+    return result
+
+
+def run_topic_subscriber_once(
+    *,
+    topic: str,
+    message_type: str,
+    node_name: str,
+    timeout: float,
+) -> dict[str, Any]:
+    started = start_topic_subscriber(
+        topic=topic,
+        message_type=message_type,
+        node_name=node_name,
+        history=1,
+        max_messages=1,
+    )
+    if not started.get("ok"):
+        return {**started, "running": False, "messages": [], "received": 0}
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    status = topic_subscriber_status(topic)
+    while status.get("running") and not status.get("messages") and time.monotonic() < deadline:
+        time.sleep(0.05)
+        status = topic_subscriber_status(topic)
+    stopped = stop_topic_subscriber(topic)
+    messages = list(status.get("messages") or stopped.get("messages") or [])
+    return {
+        "ok": bool(messages),
+        "running": False,
+        "backend": started.get("backend", ""),
+        "messages": messages,
+        "latest": messages[-1] if messages else {},
+        "received": len(messages),
+        "error": "" if messages else f"no message received from {topic} within {timeout:g}s",
+    }
 
 
 def _topic_relay_script() -> Path:

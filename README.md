@@ -65,11 +65,14 @@ nodes appear under the **ROS 2** palette category.
 | `ROS2SystemCheck` | Detect the backend (native / Docker / unavailable) and probe the ROS graph |
 | `ROS2TopicList` | List live topics, optionally with message types |
 | `ROS2TopicEcho` | Read N messages from a topic, bounded by a timeout |
-| `ROS2TopicPublish` | Publish a bounded number of messages to a topic |
-| `ROS2TopicPublisher` | Start or stop a managed continuous topic publisher |
+| `ROS2TopicPublisher` | Publish once, start continuously, or stop a topic publisher with an optional explicit ROS node name |
+| `ROS2TopicSubscriber` | Subscribe once, start continuously, or stop a named subscriber while retaining structured recent messages |
 | `ROS2TopicRelay` | Continuously subscribe to one typed data topic and republish unchanged messages on another topic |
+| `ROS2WorkspaceBuild` | Copy and build a local colcon workspace for the active native or Docker ROS backend |
+| `ROS2PythonNode` | Start or stop a standalone Python `rclpy` node from a workspace file or inline code |
 | `ROS2Launch` | Start/stop a background `ros2 launch ...` process by stable `run_id` |
 | `ROS2Run` | Start/stop a background `ros2 run <package> <executable> ...` process |
+| `ROS2GraphExplorer` | Capture nodes, typed topics, services, publisher/subscriber endpoints, and QoS summaries as one visual topology |
 | `ROS2NodeList` | List running ROS nodes |
 | `ROS2ServiceList` | List live services, optionally with types |
 | `ROS2InterfaceShow` | Show a message/service definition — lets AI agents compose valid payloads |
@@ -80,6 +83,52 @@ nodes appear under the **ROS 2** palette category.
 
 Action nodes carry an optional `trigger` input so you can sequence them in a
 graph (start the publisher → then echo).
+
+`ROS2TopicPublisher` owns the complete publishing lifecycle. Set `action=once`
+to send `count` messages and exit, `action=start` to publish continuously at
+`rate_hz`, or `action=stop` to stop the managed publisher. `node_name` gives
+the publishing node an explicit name in the ROS graph.
+
+`ROS2TopicSubscriber` provides the matching subscription lifecycle. Set
+`action=start`, choose a stable `node_name`, topic, and message type, and cook
+the node once. Its `latest`, `messages`, and `received` outputs update while the
+subscriber is live. Set `action=stop` to stop it, or `action=once` for one named
+bounded read. `history` retains the most recent 1–100 structured messages.
+
+`ROS2PythonNode` runs standalone `rclpy` programs as managed processes. In
+`source_mode=file`, set `script_path` to a `.py` file; Docker-backed runtimes
+copy it into the ROS helper container before starting it. In
+`source_mode=inline`, place the program in `code`. `run_id` owns replacement,
+runtime reattachment, and stopping, while `arguments` uses normal shell-style
+argument splitting. The live `logs` output retains the most recent 50 stdout
+and stderr lines. The Python program defines its own ROS node names, topics,
+services, parameters, and timers.
+
+`ROS2WorkspaceBuild` turns a workspace containing `src/` into a sourced ROS 2
+overlay. Set `workspace_path` to an absolute path or a path relative to the
+Blacknode workspace. `packages_select` optionally limits the colcon build to a
+space-separated package list. Its `workspace_path` output connects directly to
+the matching optional input on `ROS2Run` or `ROS2Launch`. With the Docker
+backend, Blacknode copies the source tree into the managed ROS helper container,
+builds it there, and sources that overlay for the run or launch process.
+
+### Explore the live graph
+
+`ROS2GraphExplorer` captures a read-only topology snapshot and renders it on
+the workflow canvas as publisher → typed topic → subscriber paths. Its Topics,
+Nodes, and Services tabs share one search field, and endpoint cards show the
+available reliability and durability QoS values. **Add monitor** creates a
+camera, depth, joint-state, or generic topic monitor beside the explorer based
+on the selected message type. **Add subscriber** creates a persistent named
+`ROS2TopicSubscriber`; **Add one-shot monitor** keeps the bounded debugging
+behavior explicit.
+
+Use `namespace` to focus one robot or subsystem. Endpoint inspection is
+bounded by `max_topics` (40 by default) and runs concurrently; turn
+`include_endpoints` off for a faster name-and-type inventory. The `graph`
+output is a versioned dictionary containing the capture time, backend, nodes,
+typed topics, services, endpoint details, warnings, and truncation state, so
+the same snapshot can feed other workflow nodes or an agent.
 
 Managed processes are scoped by stable IDs and topic groups can be inspected
 as one contract. This lets a camera provider verify RGB, camera-info, depth,
@@ -100,7 +149,7 @@ shared `core` runtime where needed:
 | `services` | On | Service discovery |
 | `diagnostics` | On | Backend status, graph inspection, and interface inspection |
 | `rosbridge` | Off | WebSocket topic I/O, connection status, and local server lifecycle |
-| `processes` | Off | Managed `ros2 run` and `ros2 launch` processes |
+| `processes` | Off | Local workspace builds and managed `ros2 run`/`ros2 launch` processes |
 
 Templates declare the exact components they use. Enabling any feature component
 resolves `core` first, and disabling a component removes its nodes from package
@@ -159,6 +208,7 @@ One template per feature — no overlapping variants:
 | **Publish & Subscribe Messages** | Messaging. Publishes on `/blacknode_demo`, subscribes and reads one back, lists the live graph, and draws a PASS/FAIL dashboard. |
 | **Relay Any ROS 2 Data Topic** | Data routing. Continuously subscribes to a configurable source topic and republishes the same typed messages on a configurable destination topic. |
 | **Run Your Own ROS 2 Package** | Process control. `ros2 launch` your own package, then confirm which topics and nodes appeared. |
+| **Explore the Live ROS 2 Graph** | Topology inspection. Filters a read-only graph and maps publishers through typed topics to subscribers. |
 | **Connect to a Robot Over WiFi** | Remote transport. Reaches a robot running `rosbridge_server` at `ROBOT_IP` over a WebSocket: check, read a topic, publish back. |
 
 To verify it visually:
