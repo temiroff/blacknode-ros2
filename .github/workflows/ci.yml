@@ -22,6 +22,11 @@ jobs:
         with:
           repository: temiroff/Blacknode
           path: core
+      - name: Check out package dependencies
+        shell: bash
+        run: |
+          mkdir -p core/packages
+          git clone --depth 1 https://github.com/temiroff/blacknode-robot.git core/packages/blacknode-robot
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
