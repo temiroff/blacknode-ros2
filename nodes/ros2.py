@@ -254,10 +254,12 @@ def _ros2_message_type(topic: str, configured: str) -> tuple[str, str]:
     category=_CATEGORY,
     description=(
         "Read one configured ROS 2 topic as a managed message stream. "
-        "Use once, start, status, or stop without recooking a running subscription."
+        "Connect a ComputeDevice to run on a paired device, or leave it empty "
+        "to use the local Runtime."
     ),
     inputs={
         "trigger": AnyPort,
+        "device": Dict,
         "action": Enum(["once", "start", "status", "stop"], default="status"),
         "topic": Text(default="/scan"),
         "message_type": Text(default=""),
@@ -276,7 +278,7 @@ def _ros2_message_type(topic: str, configured: str) -> tuple[str, str]:
         "backend": Text,
         "report": Text,
     },
-    primary_inputs=["action", "topic", "message_type"],
+    primary_inputs=["device", "action", "topic", "message_type"],
     primary_outputs=["stream", "status", "message"],
     live=True,
 )
@@ -297,16 +299,75 @@ def ros2_topic(ctx: dict) -> dict:
         stale_after_seconds = max(0.05, float(ctx.get("stale_after_seconds") or 2.0))
     except (TypeError, ValueError):
         stale_after_seconds = 2.0
+    device = ctx.get("device") if isinstance(ctx.get("device"), dict) else {}
+    device_id = str(device.get("device_id") or "").strip()
+    backend_hint = f"remote:{device_id}" if device_id else rt.detect_backend()["backend"]
 
     if action not in {"once", "start", "status", "stop"}:
         status = {
             "running": False,
-            "backend": rt.detect_backend()["backend"],
+            "backend": backend_hint,
             "topic": topic,
             "message_type": configured_type,
             "service_id": f"topic-subscriber:{topic}",
             "stale_after_seconds": stale_after_seconds,
             "error": f"action must be once, start, status, or stop, got {action!r}",
+        }
+        return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {status['error']}")
+
+    if device_id:
+        remote_action = ctx.get("__remote_ros2_action__")
+        if not callable(remote_action):
+            status = {
+                "running": False,
+                "backend": "none",
+                "topic": topic,
+                "message_type": configured_type,
+                "service_id": f"device:{device_id}:topic-subscriber:{topic}",
+                "stale_after_seconds": stale_after_seconds,
+                "state": "unavailable",
+                "error": (
+                    "paired-device ROS2 streaming is available through the "
+                    "Blacknode editor Runtime"
+                ),
+            }
+            return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {status['error']}")
+        try:
+            result = remote_action({
+                "node_id": str(ctx.get("__node_id__") or ""),
+                "device_id": device_id,
+                "action": action,
+                "topic": topic,
+                "message_type": configured_type,
+                "node_name": node_name,
+                "history": history,
+                "timeout": timeout,
+                "stale_after_seconds": stale_after_seconds,
+            })
+        except Exception as exc:  # editor service boundary returns structured state
+            status = {
+                "running": False,
+                "backend": "none",
+                "topic": topic,
+                "message_type": configured_type,
+                "service_id": f"device:{device_id}:topic-subscriber:{topic}",
+                "stale_after_seconds": stale_after_seconds,
+                "state": "unavailable",
+                "error": str(exc),
+            }
+            return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {status['error']}")
+        outputs = result.get("outputs") if isinstance(result, dict) else None
+        if isinstance(outputs, dict):
+            return outputs
+        status = {
+            "running": False,
+            "backend": "none",
+            "topic": topic,
+            "message_type": configured_type,
+            "service_id": f"device:{device_id}:topic-subscriber:{topic}",
+            "stale_after_seconds": stale_after_seconds,
+            "state": "error",
+            "error": "paired Runtime returned an invalid ROS2 stream response",
         }
         return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {status['error']}")
 

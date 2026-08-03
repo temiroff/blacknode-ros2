@@ -20,8 +20,9 @@ Capability-specific nodes remain with their owning packages: cameras and LiDAR i
 `transport=auto` prefers a usable native ROS 2 graph and otherwise uses the supported rosbridge path. Explicit `native` and `rosbridge` overrides remain available. Missing ROS, Docker, or rosbridge returns a structured setup error while package discovery continues.
 
 Use `ROS2` to configure one topic and manage it with `once`, `start`, `status`,
-and `stop`. It outputs the latest message plus portable stream and freshness
-status records. Advanced topic publication, relay, and discovery remain
+and `stop`. Connect `ComputeDevice.device` to `ROS2.device` to subscribe on a
+paired device Runtime; leave it empty to subscribe locally. It outputs the
+latest message plus portable stream and freshness status records. Advanced topic publication, relay, and discovery remain
 available through the `ROS2Topic*` nodes.
 
 ## Included workflows

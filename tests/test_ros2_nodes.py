@@ -250,7 +250,7 @@ def test_ros2_has_generic_managed_stream_contract():
     ros2 = _NODE_REGISTRY["ROS2"]
 
     assert ros2._bn_inputs == [
-        "trigger", "action", "topic", "message_type", "node_name", "history",
+        "trigger", "device", "action", "topic", "message_type", "node_name", "history",
         "timeout", "stale_after_seconds",
     ]
     assert ros2._bn_input_choices["action"] == ["once", "start", "status", "stop"]
@@ -258,7 +258,7 @@ def test_ros2_has_generic_managed_stream_contract():
         "running", "message", "messages", "stream", "status", "received",
         "backend", "report",
     ]
-    assert ros2._bn_primary_inputs == ["action", "topic", "message_type"]
+    assert ros2._bn_primary_inputs == ["device", "action", "topic", "message_type"]
     assert ros2._bn_primary_outputs == ["stream", "status", "message"]
     assert ros2._bn_live_capable is True
 
@@ -748,6 +748,11 @@ def test_templates_declare_exact_component_requirements():
                 "blacknode-ros2/topics",
             },
             "ros2-topic-stream.json": {
+                "blacknode-ros2/core",
+                "blacknode-ros2/topics",
+            },
+            "ros2-device-topic-stream.json": {
+                "blacknode-robot/capabilities",
                 "blacknode-ros2/core",
                 "blacknode-ros2/topics",
             },
@@ -1264,6 +1269,56 @@ def test_generic_ros2_starts_managed_topic_stream(monkeypatch):
     assert result["stream"]["kind"] == "blacknode.message-stream"
     assert result["stream"]["protocol"] == "ros2"
     assert result["status"]["state"] == "waiting"
+
+
+def test_generic_ros2_routes_connected_compute_device_to_editor_runtime(monkeypatch):
+    captured = {}
+
+    def remote_action(request):
+        captured.update(request)
+        return {
+            "outputs": {
+                "running": True,
+                "message": {"ranges": [1.0, 2.0]},
+                "messages": [{"ranges": [1.0, 2.0]}],
+                "stream": {"kind": "blacknode.message-stream", "topic": "/scan"},
+                "status": {"kind": "blacknode.stream-status", "state": "ready"},
+                "received": 4,
+                "backend": "remote:jetson",
+                "report": "ROS2 streaming from jetson",
+            },
+        }
+
+    result = _NODE_REGISTRY["ROS2"]({
+        "__node_id__": "scan-node",
+        "__remote_ros2_action__": remote_action,
+        "device": {
+            "kind": "blacknode.compute-device-target",
+            "device_id": "jetson",
+        },
+        "action": "start",
+        "topic": "/scan",
+        "message_type": "sensor_msgs/msg/LaserScan",
+    })
+
+    assert captured["node_id"] == "scan-node"
+    assert captured["device_id"] == "jetson"
+    assert captured["action"] == "start"
+    assert captured["topic"] == "/scan"
+    assert result["received"] == 4
+    assert result["message"]["ranges"] == [1.0, 2.0]
+
+
+def test_generic_ros2_remote_target_is_structurally_unavailable_outside_editor():
+    result = _NODE_REGISTRY["ROS2"]({
+        "device": {"device_id": "jetson"},
+        "action": "status",
+        "topic": "/scan",
+    })
+
+    assert result["running"] is False
+    assert result["status"]["state"] == "unavailable"
+    assert "editor Runtime" in result["report"]
 
 
 def test_generic_ros2_status_reports_fresh_message(monkeypatch):
