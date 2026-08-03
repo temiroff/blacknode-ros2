@@ -19,7 +19,10 @@ Capability-specific nodes remain with their owning packages: cameras and LiDAR i
 
 `transport=auto` prefers a usable native ROS 2 graph and otherwise uses the supported rosbridge path. Explicit `native` and `rosbridge` overrides remain available. Missing ROS, Docker, or rosbridge returns a structured setup error while package discovery continues.
 
-Use `ROS2GraphExplorer` for a read-only topology, `ROS2TopicPublisher` and `ROS2TopicSubscriber` for managed messaging, `ROS2TopicRelay` for non-motion data routing, and `ROS2Run` or `ROS2Launch` for supervised processes. Motion destinations are rejected by the generic relay; use an explicitly armed controller from `blacknode-motion`.
+Use `ROS2` to configure one topic and manage it with `once`, `start`, `status`,
+and `stop`. It outputs the latest message plus portable stream and freshness
+status records. Advanced topic publication, relay, and discovery remain
+available through the `ROS2Topic*` nodes.
 
 ## Included workflows
 

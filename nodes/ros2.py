@@ -231,6 +231,183 @@ def ros2_topic_subscriber(ctx: dict) -> dict:
     }
 
 
+def _ros2_message_type(topic: str, configured: str) -> tuple[str, str]:
+    if configured:
+        return configured, ""
+    discovered = rt.run_ros2(["topic", "type", topic], timeout=15)
+    message_type = next(
+        (line.strip() for line in str(discovered.get("stdout") or "").splitlines() if line.strip()),
+        "",
+    )
+    if discovered.get("ok") and message_type:
+        return message_type, ""
+    reason = str(
+        discovered.get("error")
+        or discovered.get("stderr")
+        or f"no publisher advertises {topic}"
+    )
+    return "", f"could not discover the message type for {topic}: {reason}"
+
+
+@node(
+    name="ROS2", component="topics",
+    category=_CATEGORY,
+    description=(
+        "Read one configured ROS 2 topic as a managed message stream. "
+        "Use once, start, status, or stop without recooking a running subscription."
+    ),
+    inputs={
+        "trigger": AnyPort,
+        "action": Enum(["once", "start", "status", "stop"], default="status"),
+        "topic": Text(default="/scan"),
+        "message_type": Text(default=""),
+        "node_name": Text(default="blacknode_ros2_topic"),
+        "history": Int(default=10),
+        "timeout": Float(default=10.0),
+        "stale_after_seconds": Float(default=2.0),
+    },
+    outputs={
+        "running": Bool,
+        "message": Dict,
+        "messages": List,
+        "stream": Dict,
+        "status": Dict,
+        "received": Int,
+        "backend": Text,
+        "report": Text,
+    },
+    primary_inputs=["action", "topic", "message_type"],
+    primary_outputs=["stream", "status", "message"],
+    live=True,
+)
+def ros2_topic(ctx: dict) -> dict:
+    action = str(ctx.get("action") or "status").strip().lower()
+    topic = str(ctx.get("topic") or "/scan").strip() or "/scan"
+    configured_type = str(ctx.get("message_type") or "").strip()
+    node_name = str(ctx.get("node_name") or "blacknode_ros2_topic").strip().lstrip("/")
+    try:
+        history = max(1, min(100, int(ctx.get("history") or 10)))
+    except (TypeError, ValueError):
+        history = 10
+    try:
+        timeout = max(0.1, float(ctx.get("timeout") or 10.0))
+    except (TypeError, ValueError):
+        timeout = 10.0
+    try:
+        stale_after_seconds = max(0.05, float(ctx.get("stale_after_seconds") or 2.0))
+    except (TypeError, ValueError):
+        stale_after_seconds = 2.0
+
+    if action not in {"once", "start", "status", "stop"}:
+        status = {
+            "running": False,
+            "backend": rt.detect_backend()["backend"],
+            "topic": topic,
+            "message_type": configured_type,
+            "service_id": f"topic-subscriber:{topic}",
+            "stale_after_seconds": stale_after_seconds,
+            "error": f"action must be once, start, status, or stop, got {action!r}",
+        }
+        return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {status['error']}")
+
+    if action == "status":
+        status = rt.topic_subscriber_status(topic)
+        status["stale_after_seconds"] = stale_after_seconds
+        age_seconds = status.get("age_seconds")
+        status["source_fresh"] = bool(
+            status.get("received")
+            and isinstance(age_seconds, (int, float))
+            and float(age_seconds) <= stale_after_seconds
+        )
+        if status.get("backend") == "none":
+            report = "ROS2 unavailable: Install ROS 2 on the Runtime device"
+        else:
+            report = (
+                f"ROS2 status: {topic} is {('running' if status.get('running') else 'stopped')}; "
+                f"received {int(status.get('received') or 0)} message(s)"
+            )
+        return rt.ros2_topic_outputs(status, report=report)
+
+    if action == "stop":
+        stopped = rt.stop_topic_subscriber(topic)
+        stopped.setdefault("topic", topic)
+        stopped.setdefault("message_type", configured_type)
+        stopped["state"] = "stopped"
+        stopped["stale_after_seconds"] = stale_after_seconds
+        return rt.ros2_topic_outputs(stopped, report=f"ROS2 stopped: {topic}")
+
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", node_name):
+        status = {
+            "running": False,
+            "backend": rt.detect_backend()["backend"],
+            "topic": topic,
+            "message_type": configured_type,
+            "service_id": f"topic-subscriber:{topic}",
+            "stale_after_seconds": stale_after_seconds,
+            "error": (
+                "node_name must start with a letter or underscore and contain "
+                "only letters, numbers, and underscores"
+            ),
+        }
+        return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {status['error']}")
+
+    message_type, type_error = _ros2_message_type(topic, configured_type)
+    if type_error:
+        status = {
+            "running": False,
+            "backend": rt.detect_backend()["backend"],
+            "topic": topic,
+            "message_type": "",
+            "service_id": f"topic-subscriber:{topic}",
+            "stale_after_seconds": stale_after_seconds,
+            "error": type_error,
+        }
+        return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {type_error}")
+
+    if action == "once":
+        result = rt.run_topic_subscriber_once(
+            topic=topic,
+            message_type=message_type,
+            node_name=node_name,
+            timeout=timeout,
+            public_node_type="ROS2",
+            stale_after_seconds=stale_after_seconds,
+        )
+        report = (
+            f"ROS2 received one {message_type} message from {topic}"
+            if result.get("ok")
+            else f"ROS2 FAILED: {result.get('error') or 'no message received'}"
+        )
+        return rt.ros2_topic_outputs(result, report=report)
+
+    started = rt.start_topic_subscriber(
+        topic=topic,
+        message_type=message_type,
+        node_name=node_name,
+        history=history,
+        public_node_type="ROS2",
+        stale_after_seconds=stale_after_seconds,
+    )
+    if not started.get("ok"):
+        failed = {
+            **started,
+            "running": False,
+            "topic": topic,
+            "message_type": message_type,
+            "service_id": f"topic-subscriber:{topic}",
+            "stale_after_seconds": stale_after_seconds,
+        }
+        return rt.ros2_topic_outputs(
+            failed,
+            report=f"ROS2 FAILED: {started.get('error') or 'could not start subscription'}",
+        )
+    status = rt.topic_subscriber_status(topic)
+    return rt.ros2_topic_outputs(
+        status,
+        report=f"ROS2 streaming {message_type} from {topic} via {started.get('backend', '?')}",
+    )
+
+
 @node(
     name="ROS2TopicPublisher", component="topics",
     category=_CATEGORY,

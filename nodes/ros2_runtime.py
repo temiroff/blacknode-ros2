@@ -97,30 +97,34 @@ def runtime_status() -> dict[str, Any]:
 
     node_outputs: list[dict[str, Any]] = []
     for run_id, item in list(_topic_subscribers.items()):
-        proc = item.get("proc")
-        running = bool(proc is not None and proc.poll() is None)
-        messages = list(item.get("messages") or [])
+        snapshot = _topic_subscriber_snapshot(item)
+        running = bool(snapshot.get("running"))
+        messages = list(snapshot.get("messages") or [])
         errors = list(item.get("errors") or [])
-        latest = messages[-1] if messages else {}
+        latest = snapshot.get("latest") or {}
         report = (
             f"subscribing as /{item.get('node_name', '')} on {item.get('topic', '')}; "
-            f"received {int(item.get('received') or 0)} message(s)"
+            f"received {int(snapshot.get('received') or 0)} message(s)"
             if running
-            else f"subscriber stopped after {int(item.get('received') or 0)} message(s)"
+            else f"subscriber stopped after {int(snapshot.get('received') or 0)} message(s)"
         )
         if errors and not messages:
             report = f"subscriber error: {errors[-1]}"
-        node_outputs.append({
-            "node_type": "ROS2TopicSubscriber",
-            "run_id": run_id,
-            "outputs": {
+        if item.get("public_node_type") == "ROS2":
+            outputs = ros2_topic_outputs(snapshot, report=report)
+        else:
+            outputs = {
                 "running": running,
                 "latest": latest,
                 "messages": messages,
-                "received": int(item.get("received") or 0),
+                "received": int(snapshot.get("received") or 0),
                 "backend": item.get("backend", ""),
                 "report": report,
-            },
+            }
+        node_outputs.append({
+            "node_type": item.get("public_node_type", "ROS2TopicSubscriber"),
+            "run_id": run_id,
+            "outputs": outputs,
         })
     node_outputs.extend(_python_node_runtime_outputs())
 
@@ -1406,6 +1410,8 @@ def _read_topic_subscriber_output(key: str, stream: Any, *, error: bool = False)
             if isinstance(message, dict):
                 item["messages"].append(message)
                 item["received"] = int(item.get("received") or 0) + 1
+                item["last_message_time_ns"] = time.time_ns()
+                item["last_message_monotonic"] = time.monotonic()
     finally:
         try:
             stream.close()
@@ -1420,6 +1426,8 @@ def start_topic_subscriber(
     node_name: str,
     history: int = 10,
     max_messages: int = 0,
+    public_node_type: str = "ROS2TopicSubscriber",
+    stale_after_seconds: float = 2.0,
 ) -> dict[str, Any]:
     """Start one named subscriber and retain a bounded structured message history."""
     backend = detect_backend()["backend"]
@@ -1495,6 +1503,10 @@ def start_topic_subscriber(
         "messages": deque(maxlen=max(1, min(100, int(history)))),
         "errors": deque(maxlen=20),
         "received": 0,
+        "public_node_type": public_node_type,
+        "stale_after_seconds": max(0.05, float(stale_after_seconds)),
+        "last_message_time_ns": 0,
+        "last_message_monotonic": 0.0,
     }
     assert proc.stdout is not None
     assert proc.stderr is not None
@@ -1524,6 +1536,95 @@ def start_topic_subscriber(
     return {"ok": True, "backend": backend, "run_id": key}
 
 
+def _topic_subscriber_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    proc = item.get("proc")
+    messages = list(item.get("messages") or [])
+    errors = list(item.get("errors") or [])
+    last_monotonic = float(item.get("last_message_monotonic") or 0.0)
+    age_seconds = max(0.0, time.monotonic() - last_monotonic) if last_monotonic else None
+    stale_after_seconds = max(0.05, float(item.get("stale_after_seconds") or 2.0))
+    running = bool(proc is not None and proc.poll() is None)
+    return {
+        "ok": not (errors and not messages and not running),
+        "running": running,
+        "backend": item.get("backend", ""),
+        "topic": item.get("topic", ""),
+        "message_type": item.get("message_type", ""),
+        "node_name": item.get("node_name", ""),
+        "service_id": f"topic-subscriber:{item.get('topic', '')}",
+        "messages": messages,
+        "latest": messages[-1] if messages else {},
+        "received": int(item.get("received") or 0),
+        "last_message_time_ns": int(item.get("last_message_time_ns") or 0),
+        "age_seconds": age_seconds,
+        "stale_after_seconds": stale_after_seconds,
+        "source_fresh": bool(messages and age_seconds is not None and age_seconds <= stale_after_seconds),
+        "error": errors[-1] if errors else "",
+    }
+
+
+def ros2_topic_outputs(status: dict[str, Any], *, report: str = "") -> dict[str, Any]:
+    """Normalize a managed subscriber snapshot for the generic ROS2 node."""
+    running = bool(status.get("running"))
+    source_fresh = bool(status.get("source_fresh"))
+    error = str(status.get("error") or "")
+    backend = str(status.get("backend") or _passive_backend())
+    explicit_state = str(status.get("state") or "").strip().lower()
+    if explicit_state in {"error", "ready", "stale", "waiting", "stopped", "unavailable"}:
+        state = explicit_state
+    elif backend == "none":
+        state = "unavailable"
+        error = error or _NO_BACKEND_HELP
+    elif error:
+        state = "error"
+    elif source_fresh:
+        state = "ready"
+    elif running and status.get("received"):
+        state = "stale"
+    elif running:
+        state = "waiting"
+    else:
+        state = "stopped"
+    topic = str(status.get("topic") or "")
+    message_type = str(status.get("message_type") or "")
+    service_id = str(status.get("service_id") or f"topic-subscriber:{topic}")
+    stream = {
+        "kind": "blacknode.message-stream",
+        "schema_version": 1,
+        "stream_id": service_id,
+        "protocol": "ros2",
+        "state": state,
+        "managed": True,
+        "topic": topic,
+        "message_type": message_type,
+        "backend": backend,
+    }
+    health = {
+        "kind": "blacknode.stream-status",
+        "schema_version": 1,
+        "stream_id": service_id,
+        "state": state,
+        "available": backend != "none",
+        "worker_alive": running,
+        "source_fresh": source_fresh,
+        "received": int(status.get("received") or 0),
+        "last_message_time_ns": int(status.get("last_message_time_ns") or 0),
+        "age_seconds": status.get("age_seconds"),
+        "stale_after_seconds": float(status.get("stale_after_seconds") or 2.0),
+        "error": error,
+    }
+    return {
+        "running": running,
+        "message": status.get("latest") or {},
+        "messages": list(status.get("messages") or []),
+        "stream": stream,
+        "status": health,
+        "received": int(status.get("received") or 0),
+        "backend": backend,
+        "report": report or f"ROS2 {state}: {topic or '(topic not set)'}",
+    }
+
+
 def topic_subscriber_status(topic: str) -> dict[str, Any]:
     key = f"topic-subscriber:{topic}"
     item = _topic_subscribers.get(key)
@@ -1534,19 +1635,16 @@ def topic_subscriber_status(topic: str) -> dict[str, Any]:
             "backend": _passive_backend(),
             "messages": [],
             "received": 0,
+            "topic": topic,
+            "message_type": "",
+            "service_id": key,
+            "last_message_time_ns": 0,
+            "age_seconds": None,
+            "stale_after_seconds": 2.0,
+            "source_fresh": False,
+            "error": "",
         }
-    proc = item.get("proc")
-    messages = list(item.get("messages") or [])
-    errors = list(item.get("errors") or [])
-    return {
-        "ok": not (errors and not messages and proc is not None and proc.poll() is not None),
-        "running": bool(proc is not None and proc.poll() is None),
-        "backend": item.get("backend", ""),
-        "messages": messages,
-        "latest": messages[-1] if messages else {},
-        "received": int(item.get("received") or 0),
-        "error": errors[-1] if errors else "",
-    }
+    return _topic_subscriber_snapshot(item)
 
 
 def stop_topic_subscriber(topic: str) -> dict[str, Any]:
@@ -1558,8 +1656,8 @@ def stop_topic_subscriber(topic: str) -> dict[str, Any]:
         pattern = r"ros2_topic_subscriber\.py .*--topic " + re.escape(topic)
     result = stop_ros2_managed(key, pattern=pattern)
     if item is not None:
-        result["messages"] = list(item.get("messages") or [])
-        result["received"] = int(item.get("received") or 0)
+        result.update(_topic_subscriber_snapshot(item))
+        result["running"] = False
     _topic_subscribers.pop(key, None)
     return result
 
@@ -1570,6 +1668,8 @@ def run_topic_subscriber_once(
     message_type: str,
     node_name: str,
     timeout: float,
+    public_node_type: str = "ROS2TopicSubscriber",
+    stale_after_seconds: float = 2.0,
 ) -> dict[str, Any]:
     started = start_topic_subscriber(
         topic=topic,
@@ -1577,6 +1677,8 @@ def run_topic_subscriber_once(
         node_name=node_name,
         history=1,
         max_messages=1,
+        public_node_type=public_node_type,
+        stale_after_seconds=stale_after_seconds,
     )
     if not started.get("ok"):
         return {**started, "running": False, "messages": [], "received": 0}
@@ -1594,6 +1696,13 @@ def run_topic_subscriber_once(
         "messages": messages,
         "latest": messages[-1] if messages else {},
         "received": len(messages),
+        "topic": topic,
+        "message_type": message_type,
+        "service_id": f"topic-subscriber:{topic}",
+        "last_message_time_ns": int(status.get("last_message_time_ns") or 0),
+        "age_seconds": status.get("age_seconds"),
+        "stale_after_seconds": max(0.05, float(stale_after_seconds)),
+        "source_fresh": bool(messages),
         "error": "" if messages else f"no message received from {topic} within {timeout:g}s",
     }
 

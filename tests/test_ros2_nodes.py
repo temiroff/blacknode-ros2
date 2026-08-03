@@ -52,6 +52,7 @@ from blacknode.workflow import validate_workflow
 TEMPLATE_DIR = PACKAGE_DIR / "templates"
 
 EXPECTED_NODES = [
+    "ROS2",
     "ROS2BridgeEcho",
     "ROS2BridgePublish",
     "ROS2GraphExplorer",
@@ -91,6 +92,7 @@ EXPECTED_COMPONENT_NODES = {
         "ROS2RosbridgeStatus",
     },
     "topics": {
+        "ROS2",
         "ROS2TopicEcho",
         "ROS2TopicList",
         "ROS2TopicPublisher",
@@ -242,6 +244,23 @@ def test_topic_subscriber_has_managed_named_contract():
         "running", "latest", "messages", "received", "backend", "report",
     ]
     assert subscriber._bn_hidden is False
+
+
+def test_ros2_has_generic_managed_stream_contract():
+    ros2 = _NODE_REGISTRY["ROS2"]
+
+    assert ros2._bn_inputs == [
+        "trigger", "action", "topic", "message_type", "node_name", "history",
+        "timeout", "stale_after_seconds",
+    ]
+    assert ros2._bn_input_choices["action"] == ["once", "start", "status", "stop"]
+    assert ros2._bn_outputs == [
+        "running", "message", "messages", "stream", "status", "received",
+        "backend", "report",
+    ]
+    assert ros2._bn_primary_inputs == ["action", "topic", "message_type"]
+    assert ros2._bn_primary_outputs == ["stream", "status", "message"]
+    assert ros2._bn_live_capable is True
 
 
 def test_python_node_has_standalone_script_contract():
@@ -728,6 +747,10 @@ def test_templates_declare_exact_component_requirements():
                 "blacknode-ros2/core",
                 "blacknode-ros2/topics",
             },
+            "ros2-topic-stream.json": {
+                "blacknode-ros2/core",
+                "blacknode-ros2/topics",
+            },
         }
     for path in sorted(TEMPLATE_DIR.glob("*.json")):
         workflow = json.loads(path.read_text(encoding="utf-8"))
@@ -1192,6 +1215,165 @@ def test_topic_subscriber_rejects_invalid_node_name(monkeypatch):
 
     assert result["running"] is False
     assert "node_name" in result["report"]
+
+
+def test_generic_ros2_starts_managed_topic_stream(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native", "detail": "test"})
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "backend": "native", "run_id": "topic-subscriber:/scan"}
+
+    monkeypatch.setattr(rt, "start_topic_subscriber", fake_start)
+    monkeypatch.setattr(rt, "topic_subscriber_status", lambda topic: {
+        "ok": True,
+        "running": True,
+        "backend": "native",
+        "topic": topic,
+        "message_type": "sensor_msgs/msg/LaserScan",
+        "service_id": f"topic-subscriber:{topic}",
+        "messages": [],
+        "latest": {},
+        "received": 0,
+        "last_message_time_ns": 0,
+        "age_seconds": None,
+        "stale_after_seconds": 1.0,
+        "source_fresh": False,
+        "error": "",
+    })
+
+    result = _NODE_REGISTRY["ROS2"]({
+        "action": "start",
+        "topic": "/scan",
+        "message_type": "sensor_msgs/msg/LaserScan",
+        "node_name": "blacknode_scan",
+        "history": 5,
+        "stale_after_seconds": 1.0,
+    })
+
+    assert captured == {
+        "topic": "/scan",
+        "message_type": "sensor_msgs/msg/LaserScan",
+        "node_name": "blacknode_scan",
+        "history": 5,
+        "public_node_type": "ROS2",
+        "stale_after_seconds": 1.0,
+    }
+    assert result["running"] is True
+    assert result["stream"]["kind"] == "blacknode.message-stream"
+    assert result["stream"]["protocol"] == "ros2"
+    assert result["status"]["state"] == "waiting"
+
+
+def test_generic_ros2_status_reports_fresh_message(monkeypatch):
+    monkeypatch.setattr(rt, "topic_subscriber_status", lambda topic: {
+        "ok": True,
+        "running": True,
+        "backend": "native",
+        "topic": topic,
+        "message_type": "std_msgs/msg/String",
+        "service_id": f"topic-subscriber:{topic}",
+        "messages": [{"data": "ready"}],
+        "latest": {"data": "ready"},
+        "received": 3,
+        "last_message_time_ns": 42,
+        "age_seconds": 0.1,
+        "stale_after_seconds": 2.0,
+        "source_fresh": True,
+        "error": "",
+    })
+
+    result = _NODE_REGISTRY["ROS2"]({"action": "status", "topic": "/events"})
+
+    assert result["message"] == {"data": "ready"}
+    assert result["received"] == 3
+    assert result["status"]["state"] == "ready"
+    assert result["status"]["source_fresh"] is True
+
+
+def test_generic_ros2_status_is_structurally_unavailable_without_backend(monkeypatch):
+    monkeypatch.setattr(rt, "topic_subscriber_status", lambda topic: {
+        "ok": True,
+        "running": False,
+        "backend": "none",
+        "topic": topic,
+        "message_type": "",
+        "service_id": f"topic-subscriber:{topic}",
+        "messages": [],
+        "received": 0,
+        "source_fresh": False,
+        "error": "",
+    })
+
+    result = _NODE_REGISTRY["ROS2"]({"action": "status", "topic": "/scan"})
+
+    assert result["status"]["state"] == "unavailable"
+    assert result["status"]["available"] is False
+    assert "Install ROS 2" in result["report"]
+
+
+def test_generic_ros2_once_can_discover_message_type(monkeypatch):
+    monkeypatch.setattr(rt, "run_ros2", lambda args, timeout=15: {
+        "ok": True,
+        "backend": "native",
+        "stdout": "std_msgs/msg/String\n",
+        "stderr": "",
+    })
+    captured = {}
+
+    def fake_once(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "running": False,
+            "backend": "native",
+            "topic": kwargs["topic"],
+            "message_type": kwargs["message_type"],
+            "service_id": f"topic-subscriber:{kwargs['topic']}",
+            "messages": [{"data": "hello"}],
+            "latest": {"data": "hello"},
+            "received": 1,
+            "last_message_time_ns": 42,
+            "age_seconds": 0.0,
+            "stale_after_seconds": kwargs["stale_after_seconds"],
+            "source_fresh": True,
+            "error": "",
+        }
+
+    monkeypatch.setattr(rt, "run_topic_subscriber_once", fake_once)
+    result = _NODE_REGISTRY["ROS2"]({
+        "action": "once",
+        "topic": "/events",
+        "message_type": "",
+        "timeout": 3.0,
+    })
+
+    assert captured["message_type"] == "std_msgs/msg/String"
+    assert captured["public_node_type"] == "ROS2"
+    assert result["message"] == {"data": "hello"}
+    assert result["status"]["state"] == "ready"
+
+
+def test_generic_ros2_stop_is_idempotent(monkeypatch):
+    monkeypatch.setattr(rt, "stop_topic_subscriber", lambda topic: {
+        "ok": True,
+        "running": False,
+        "backend": "native",
+        "topic": topic,
+        "message_type": "sensor_msgs/msg/LaserScan",
+        "service_id": f"topic-subscriber:{topic}",
+        "messages": [],
+        "received": 0,
+        "source_fresh": False,
+        "error": "",
+    })
+
+    result = _NODE_REGISTRY["ROS2"]({"action": "stop", "topic": "/scan"})
+
+    assert result["running"] is False
+    assert result["status"]["state"] == "stopped"
+    assert result["stream"]["topic"] == "/scan"
 
 
 def test_topic_relay_starts_type_preserving_managed_service(monkeypatch):
