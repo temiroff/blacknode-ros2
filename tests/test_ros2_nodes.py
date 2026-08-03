@@ -15,8 +15,9 @@ import subprocess
 import sys
 import threading
 import time
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -1226,6 +1227,37 @@ def test_native_ros_python_prefers_system_interpreter_with_rclpy(monkeypatch):
     assert interpreter == "/usr/bin/python3"
     assert error == ""
     assert calls[0][0][0] == "/usr/bin/python3"
+
+
+def test_topic_subscriber_normalizes_nonfinite_sensor_values(monkeypatch):
+    rclpy = ModuleType("rclpy")
+    rclpy_node = ModuleType("rclpy.node")
+    rclpy_node.Node = object
+    rclpy_qos = ModuleType("rclpy.qos")
+    rclpy_qos.qos_profile_sensor_data = object()
+    rosidl = ModuleType("rosidl_runtime_py")
+    rosidl_convert = ModuleType("rosidl_runtime_py.convert")
+    rosidl_convert.message_to_ordereddict = lambda message: message
+    rosidl_utilities = ModuleType("rosidl_runtime_py.utilities")
+    rosidl_utilities.get_message = lambda name: name
+    monkeypatch.setitem(sys.modules, "rclpy", rclpy)
+    monkeypatch.setitem(sys.modules, "rclpy.node", rclpy_node)
+    monkeypatch.setitem(sys.modules, "rclpy.qos", rclpy_qos)
+    monkeypatch.setitem(sys.modules, "rosidl_runtime_py", rosidl)
+    monkeypatch.setitem(sys.modules, "rosidl_runtime_py.convert", rosidl_convert)
+    monkeypatch.setitem(sys.modules, "rosidl_runtime_py.utilities", rosidl_utilities)
+    script = PACKAGE_DIR / "scripts" / "ros2_topic_subscriber.py"
+    spec = spec_from_file_location("blacknode_ros2_topic_subscriber_test", script)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    result = module._json_safe({
+        "ranges": [1.0, float("nan"), float("inf"), -float("inf")],
+    })
+
+    assert result == {"ranges": [1.0, None, None, None]}
+    assert json.dumps(result, allow_nan=False)
 
 
 def test_topic_subscriber_once_returns_structured_message(monkeypatch):

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+from collections.abc import Mapping
 from typing import Any
 
 import rclpy
@@ -20,6 +22,16 @@ def _json_default(value: Any) -> str:
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).hex()
     return str(value)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def main() -> int:
@@ -38,9 +50,14 @@ def main() -> int:
     def on_message(message: Any) -> None:
         nonlocal received
         received += 1
-        payload = message_to_ordereddict(message)
+        payload = _json_safe(message_to_ordereddict(message))
         print(
-            json.dumps({"message": payload}, default=_json_default, separators=(",", ":")),
+            json.dumps(
+                {"message": payload},
+                allow_nan=False,
+                default=_json_default,
+                separators=(",", ":"),
+            ),
             flush=True,
         )
 
