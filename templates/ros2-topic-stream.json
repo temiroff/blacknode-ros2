@@ -1,0 +1,78 @@
+{
+  "kind": "blacknode.workflow",
+  "schema_version": 1,
+  "name": "ROS 2 Topic Stream",
+  "saved_at": "2026-08-03T00:00:00",
+  "entrypoint": {"node_id": "ros2", "port": "status"},
+  "metadata": {
+    "template": true,
+    "description": "Configure one ROS 2 topic, inspect its status, capture one message, or manage a continuous subscription.",
+    "color": "#2e9fe6",
+    "required_packages": ["blacknode-ros2"],
+    "required_components": ["blacknode-ros2/core", "blacknode-ros2/topics"]
+  },
+  "node_meta": {
+    "ros2": {
+      "id": "ros2",
+      "type": "ROS2",
+      "pos": [120, 180],
+      "params": {
+        "action": "status",
+        "topic": "/scan",
+        "message_type": "sensor_msgs/msg/LaserScan",
+        "node_name": "blacknode_ros2_scan",
+        "history": 10,
+        "timeout": 10.0,
+        "stale_after_seconds": 1.0
+      },
+      "inputs": ["trigger", "action", "topic", "message_type", "node_name", "history", "timeout", "stale_after_seconds"],
+      "outputs": ["running", "message", "messages", "stream", "status", "received", "backend", "report"],
+      "input_types": {
+        "trigger": "Any",
+        "action": "Text",
+        "topic": "Text",
+        "message_type": "Text",
+        "node_name": "Text",
+        "history": "Int",
+        "timeout": "Float",
+        "stale_after_seconds": "Float"
+      },
+      "output_types": {
+        "running": "Bool",
+        "message": "Dict",
+        "messages": "List",
+        "stream": "Dict",
+        "status": "Dict",
+        "received": "Int",
+        "backend": "Text",
+        "report": "Text"
+      },
+      "input_defaults": {
+        "action": "status",
+        "topic": "/scan",
+        "message_type": "",
+        "node_name": "blacknode_ros2_topic",
+        "history": 10,
+        "timeout": 10.0,
+        "stale_after_seconds": 2.0
+      },
+      "input_choices": {"action": ["once", "start", "status", "stop"]},
+      "promoted_inputs": ["action", "topic", "message_type"],
+      "promoted_outputs": ["stream", "status", "message"]
+    },
+    "status_out": {
+      "id": "status_out",
+      "type": "Output",
+      "pos": [560, 180],
+      "params": {"label": "ROS 2 stream status"},
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {"value": "Any"},
+      "output_types": {},
+      "input_defaults": {}
+    }
+  },
+  "edges": [
+    {"from": "ros2", "from_port": "status", "to": "status_out", "to_port": "value"}
+  ]
+}

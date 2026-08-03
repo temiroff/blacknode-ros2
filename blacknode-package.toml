@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-ros2"
-version = "0.5.14"
+version = "0.5.15"
 description = "ROS 2 graph, topic, service, process, native, and rosbridge integration primitives."
 requires-blacknode = ">=0.3.0"
 layer = "ros2"
@@ -40,7 +40,7 @@ default = true
 capabilities = ["integration.ros2.topics"]
 nodes = ["components/topics/nodes"]
 node-types = [
-  "ROS2TopicEcho", "ROS2TopicList", "ROS2TopicPublisher", "ROS2TopicRelay",
+  "ROS2", "ROS2TopicEcho", "ROS2TopicList", "ROS2TopicPublisher", "ROS2TopicRelay",
   "ROS2TopicSubscriber"
 ]
 
