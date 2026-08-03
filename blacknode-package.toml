@@ -1,6 +1,6 @@
 [package]
 name = "blacknode-ros2"
-version = "0.5.15"
+version = "0.5.16"
 description = "ROS 2 graph, topic, service, process, native, and rosbridge integration primitives."
 requires-blacknode = ">=0.3.0"
 layer = "ros2"

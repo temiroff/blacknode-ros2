@@ -1,21 +1,42 @@
 {
   "kind": "blacknode.workflow",
   "schema_version": 1,
-  "name": "ROS 2 Topic Stream",
+  "name": "Stream a Device ROS 2 Topic",
   "saved_at": "2026-08-03T00:00:00",
   "entrypoint": {"node_id": "ros2", "port": "status"},
   "metadata": {
     "template": true,
-    "description": "Configure one ROS 2 topic, inspect its status, capture one message, or manage a continuous subscription.",
+    "description": "Select a paired compute device and stream one ROS 2 topic from its Runtime into the editor.",
     "color": "#2e9fe6",
-    "required_packages": ["blacknode-ros2"],
-    "required_components": ["blacknode-ros2/core", "blacknode-ros2/topics"]
+    "required_packages": ["blacknode-robot", "blacknode-ros2"],
+    "required_components": [
+      "blacknode-robot/capabilities",
+      "blacknode-ros2/core",
+      "blacknode-ros2/topics"
+    ]
   },
   "node_meta": {
+    "device": {
+      "id": "device",
+      "type": "ComputeDevice",
+      "pos": [60, 160],
+      "params": {"device_id": "", "device_name": "", "inspection": {}},
+      "inputs": ["device_id", "device_name", "inspection"],
+      "outputs": ["configured", "inspection_available", "device", "inspection", "report"],
+      "input_types": {"device_id": "Text", "device_name": "Text", "inspection": "Dict"},
+      "output_types": {
+        "configured": "Bool",
+        "inspection_available": "Bool",
+        "device": "Dict",
+        "inspection": "Dict",
+        "report": "Text"
+      },
+      "input_defaults": {"device_id": "", "device_name": "", "inspection": {}}
+    },
     "ros2": {
       "id": "ros2",
       "type": "ROS2",
-      "pos": [120, 180],
+      "pos": [560, 160],
       "params": {
         "action": "status",
         "topic": "/scan",
@@ -61,10 +82,21 @@
       "promoted_inputs": ["device", "action", "topic", "message_type"],
       "promoted_outputs": ["stream", "status", "message"]
     },
+    "message_out": {
+      "id": "message_out",
+      "type": "Output",
+      "pos": [1080, 120],
+      "params": {"label": "Latest ROS 2 message"},
+      "inputs": ["value"],
+      "outputs": [],
+      "input_types": {"value": "Any"},
+      "output_types": {},
+      "input_defaults": {}
+    },
     "status_out": {
       "id": "status_out",
       "type": "Output",
-      "pos": [560, 180],
+      "pos": [1080, 360],
       "params": {"label": "ROS 2 stream status"},
       "inputs": ["value"],
       "outputs": [],
@@ -74,6 +106,8 @@
     }
   },
   "edges": [
+    {"from": "device", "from_port": "device", "to": "ros2", "to_port": "device"},
+    {"from": "ros2", "from_port": "message", "to": "message_out", "to_port": "value"},
     {"from": "ros2", "from_port": "status", "to": "status_out", "to_port": "value"}
   ]
 }
