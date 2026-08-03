@@ -25,6 +25,8 @@ paired device Runtime; leave it empty to subscribe locally. It outputs the
 latest message plus portable stream and freshness status records. Advanced topic publication, relay, and discovery remain
 available through the `ROS2Topic*` nodes.
 
+Native topic workers automatically use the Python interpreter compatible with the sourced ROS 2 distribution; set `BLACKNODE_ROS2_PYTHON` only when that interpreter is outside `PATH`.
+
 ## Included workflows
 
 - Publish and subscribe a typed message
