@@ -11,6 +11,7 @@ Environment overrides:
 
 - ``BLACKNODE_ROS2_IMAGE``      Docker image (default ``ros:jazzy``)
 - ``BLACKNODE_ROS2_CONTAINER``  helper container name (default ``blacknode-ros2``)
+- ``BLACKNODE_ROS2_PYTHON``     native interpreter with compatible ``rclpy``
 """
 from __future__ import annotations
 
@@ -317,6 +318,43 @@ def ensure_docker_desktop(timeout: float = 90.0) -> str | None:
 
 def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def _native_ros_python() -> tuple[str, str]:
+    """Resolve a Python interpreter compatible with the sourced ROS install."""
+    candidates = [
+        str(os.environ.get("BLACKNODE_ROS2_PYTHON") or "").strip(),
+        str(shutil.which("python3") or "").strip(),
+        str(sys.executable or "").strip(),
+    ]
+    checked: set[str] = set()
+    errors: list[str] = []
+    for candidate in candidates:
+        identity = os.path.normcase(os.path.abspath(candidate)) if candidate else ""
+        if not candidate or identity in checked:
+            continue
+        checked.add(identity)
+        try:
+            probe = _run(
+                [
+                    candidate,
+                    "-c",
+                    "import rclpy; from rosidl_runtime_py.utilities import get_message",
+                ],
+                10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+            continue
+        if probe.returncode == 0:
+            return candidate, ""
+        detail = (probe.stderr or probe.stdout or "rclpy import failed").strip()
+        errors.append(f"{candidate}: {detail}")
+    return "", (
+        "No Python interpreter compatible with this ROS 2 installation could "
+        "import rclpy. Set BLACKNODE_ROS2_PYTHON to the ROS Python executable. "
+        + ("Checked: " + "; ".join(errors) if errors else "No candidates were found.")
+    )
 
 
 def ensure_container() -> str | None:
@@ -1451,6 +1489,12 @@ def start_topic_subscriber(
             ),
         }
 
+    ros_python = ""
+    if backend == "native":
+        ros_python, python_error = _native_ros_python()
+        if not ros_python:
+            return {"ok": False, "backend": backend, "error": python_error}
+
     key = f"topic-subscriber:{topic}"
     stop_topic_subscriber(topic)
     helper_args = [
@@ -1473,7 +1517,7 @@ def start_topic_subscriber(
         )
         command = ["docker", "exec", CONTAINER, "bash", "-lc", shell]
     else:
-        command = [sys.executable, str(script), *helper_args]
+        command = [ros_python, str(script), *helper_args]
 
     try:
         proc = subprocess.Popen(

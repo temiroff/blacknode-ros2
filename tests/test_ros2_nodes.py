@@ -8,6 +8,7 @@ The no-backend contract (structured error, never raises) is always exercised.
 Integration tests run only when a real backend (native ros2 or Docker) is
 available, and skip cleanly otherwise.
 """
+import io
 import json
 import shutil
 import subprocess
@@ -1165,6 +1166,66 @@ def test_topic_subscriber_starts_named_managed_subscription(monkeypatch):
     assert result["running"] is True
     assert result["messages"] == []
     assert "/event_listener" in result["report"]
+
+
+def test_native_topic_subscriber_uses_ros_compatible_python(monkeypatch):
+    captured = {}
+
+    class Process:
+        stdout = io.StringIO("")
+        stderr = io.StringIO("")
+
+        def poll(self):
+            return None
+
+    class Thread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return Process()
+
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native"})
+    monkeypatch.setattr(rt, "run_ros2", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(rt, "stop_topic_subscriber", lambda topic: {"ok": True})
+    monkeypatch.setattr(rt, "_native_ros_python", lambda: ("/usr/bin/python3", ""))
+    monkeypatch.setattr(rt.subprocess, "Popen", popen)
+    monkeypatch.setattr(rt.threading, "Thread", Thread)
+    monkeypatch.setattr(rt.time, "sleep", lambda _seconds: None)
+
+    result = rt.start_topic_subscriber(
+        topic="/scan",
+        message_type="sensor_msgs/msg/LaserScan",
+        node_name="blacknode_scan",
+    )
+
+    assert result["ok"] is True
+    assert captured["command"][0] == "/usr/bin/python3"
+    rt._topic_subscribers.clear()
+    rt._managed_detached.clear()
+
+
+def test_native_ros_python_prefers_system_interpreter_with_rclpy(monkeypatch):
+    calls = []
+    monkeypatch.delenv("BLACKNODE_ROS2_PYTHON", raising=False)
+    monkeypatch.setattr(rt.shutil, "which", lambda name: "/usr/bin/python3")
+
+    def probe(command, timeout):
+        calls.append((command, timeout))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(rt, "_run", probe)
+
+    interpreter, error = rt._native_ros_python()
+
+    assert interpreter == "/usr/bin/python3"
+    assert error == ""
+    assert calls[0][0][0] == "/usr/bin/python3"
 
 
 def test_topic_subscriber_once_returns_structured_message(monkeypatch):
