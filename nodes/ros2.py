@@ -267,6 +267,7 @@ def _ros2_message_type(topic: str, configured: str) -> tuple[str, str]:
         "history": Int(default=10),
         "timeout": Float(default=10.0),
         "stale_after_seconds": Float(default=2.0),
+        "qos": Enum(["sensor_data", "reliable", "transient_local"], default="sensor_data"),
     },
     outputs={
         "running": Bool,
@@ -286,6 +287,7 @@ def ros2_topic(ctx: dict) -> dict:
     action = str(ctx.get("action") or "status").strip().lower()
     topic = str(ctx.get("topic") or "/scan").strip() or "/scan"
     configured_type = str(ctx.get("message_type") or "").strip()
+    qos = str(ctx.get("qos") or "sensor_data").strip().lower()
     node_name = str(ctx.get("node_name") or "blacknode_ros2_topic").strip().lstrip("/")
     try:
         history = max(1, min(100, int(ctx.get("history") or 10)))
@@ -325,6 +327,7 @@ def ros2_topic(ctx: dict) -> dict:
                 "message_type": configured_type,
                 "service_id": f"device:{device_id}:topic-subscriber:{topic}",
                 "stale_after_seconds": stale_after_seconds,
+                "qos": qos,
                 "state": "unavailable",
                 "error": (
                     "paired-device ROS2 streaming is available through the "
@@ -433,6 +436,7 @@ def ros2_topic(ctx: dict) -> dict:
             timeout=timeout,
             public_node_type="ROS2",
             stale_after_seconds=stale_after_seconds,
+            qos=qos,
         )
         report = (
             f"ROS2 received one {message_type} message from {topic}"
@@ -448,6 +452,7 @@ def ros2_topic(ctx: dict) -> dict:
         history=history,
         public_node_type="ROS2",
         stale_after_seconds=stale_after_seconds,
+        qos=qos,
     )
     if not started.get("ok"):
         failed = {

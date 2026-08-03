@@ -1466,6 +1466,7 @@ def start_topic_subscriber(
     max_messages: int = 0,
     public_node_type: str = "ROS2TopicSubscriber",
     stale_after_seconds: float = 2.0,
+    qos: str = "sensor_data",
 ) -> dict[str, Any]:
     """Start one named subscriber and retain a bounded structured message history."""
     backend = detect_backend()["backend"]
@@ -1502,6 +1503,7 @@ def start_topic_subscriber(
         "--topic", topic,
         "--message-type", message_type,
         "--max-messages", str(max(0, int(max_messages))),
+        "--qos", qos if qos in {"sensor_data", "reliable", "transient_local"} else "sensor_data",
     ]
     command: list[str]
     if backend == "docker":
@@ -1714,6 +1716,7 @@ def run_topic_subscriber_once(
     timeout: float,
     public_node_type: str = "ROS2TopicSubscriber",
     stale_after_seconds: float = 2.0,
+    qos: str = "sensor_data",
 ) -> dict[str, Any]:
     started = start_topic_subscriber(
         topic=topic,
@@ -1723,6 +1726,7 @@ def run_topic_subscriber_once(
         max_messages=1,
         public_node_type=public_node_type,
         stale_after_seconds=stale_after_seconds,
+        qos=qos,
     )
     if not started.get("ok"):
         return {**started, "running": False, "messages": [], "received": 0}

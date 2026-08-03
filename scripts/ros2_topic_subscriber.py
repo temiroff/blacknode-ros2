@@ -13,7 +13,7 @@ from typing import Any
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy import qos as rclpy_qos
 from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.utilities import get_message
 
@@ -40,6 +40,7 @@ def main() -> int:
     parser.add_argument("--topic", required=True)
     parser.add_argument("--message-type", required=True)
     parser.add_argument("--max-messages", type=int, default=0)
+    parser.add_argument("--qos", choices=["sensor_data", "reliable", "transient_local"], default="sensor_data")
     args = parser.parse_args()
 
     rclpy.init()
@@ -61,11 +62,20 @@ def main() -> int:
             flush=True,
         )
 
+    qos = rclpy_qos.qos_profile_sensor_data
+    if args.qos == "reliable":
+        qos = rclpy_qos.QoSProfile(depth=10, reliability=rclpy_qos.ReliabilityPolicy.RELIABLE)
+    elif args.qos == "transient_local":
+        qos = rclpy_qos.QoSProfile(
+            depth=1,
+            reliability=rclpy_qos.ReliabilityPolicy.RELIABLE,
+            durability=rclpy_qos.DurabilityPolicy.TRANSIENT_LOCAL,
+        )
     subscription = node.create_subscription(
         message_class,
         args.topic,
         on_message,
-        qos_profile_sensor_data,
+        qos,
     )
     try:
         while rclpy.ok() and (args.max_messages <= 0 or received < args.max_messages):

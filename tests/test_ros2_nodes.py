@@ -253,7 +253,7 @@ def test_ros2_has_generic_managed_stream_contract():
 
     assert ros2._bn_inputs == [
         "trigger", "device", "action", "topic", "message_type", "node_name", "history",
-        "timeout", "stale_after_seconds",
+        "timeout", "stale_after_seconds", "qos",
     ]
     assert ros2._bn_input_choices["action"] == ["once", "start", "status", "stop"]
     assert ros2._bn_outputs == [
@@ -1337,6 +1337,7 @@ def test_generic_ros2_starts_managed_topic_stream(monkeypatch):
         "last_message_time_ns": 0,
         "age_seconds": None,
         "stale_after_seconds": 1.0,
+        "qos": "sensor_data",
         "source_fresh": False,
         "error": "",
     })
@@ -1357,6 +1358,7 @@ def test_generic_ros2_starts_managed_topic_stream(monkeypatch):
         "history": 5,
         "public_node_type": "ROS2",
         "stale_after_seconds": 1.0,
+        "qos": "sensor_data",
     }
     assert result["running"] is True
     assert result["stream"]["kind"] == "blacknode.message-stream"
