@@ -249,6 +249,48 @@ def _ros2_message_type(topic: str, configured: str) -> tuple[str, str]:
     return "", f"could not discover the message type for {topic}: {reason}"
 
 
+def _is_image_message_type(message_type: str) -> bool:
+    return str(message_type or "").strip() in {
+        "sensor_msgs/msg/Image",
+        "sensor_msgs/msg/CompressedImage",
+    }
+
+
+def _image_encoding(message_type: str) -> str:
+    return "compressed" if str(message_type).endswith("/CompressedImage") else "raw"
+
+
+def _image_outputs(
+    result: dict[str, Any],
+    *,
+    topic: str,
+    message_type: str,
+    service_id: str,
+    stale_after_seconds: float,
+    report: str,
+) -> dict[str, Any]:
+    status = dict(result or {})
+    metadata = status.get("metadata") if isinstance(status.get("metadata"), dict) else {}
+    captured = bool(status.get("image"))
+    status.update({
+        "topic": topic,
+        "message_type": message_type,
+        "service_id": service_id,
+        "transport": "inline-image" if captured else "http-image",
+        "media_type": "image/jpeg",
+        "stale_after_seconds": stale_after_seconds,
+        "received": 1 if captured else int(status.get("received") or 0),
+        "source_fresh": captured or bool(status.get("source_fresh")),
+        "latest": metadata,
+    })
+    if captured:
+        status["running"] = False
+        status["state"] = "ready"
+    elif status.get("running"):
+        status.setdefault("state", "waiting")
+    return rt.ros2_topic_outputs(status, report=report)
+
+
 @node(
     name="ROS2", component="topics",
     category=_CATEGORY,
@@ -263,6 +305,8 @@ def _ros2_message_type(topic: str, configured: str) -> tuple[str, str]:
         "action": Enum(["once", "start", "status", "stop"], default="status"),
         "topic": Text(default="/scan"),
         "message_type": Text(default=""),
+        "transport": Enum(["auto", "message", "image"], default="auto"),
+        "stream_options": Dict,
         "node_name": Text(default="blacknode_ros2_topic"),
         "history": Int(default=10),
         "timeout": Float(default=10.0),
@@ -279,14 +323,20 @@ def _ros2_message_type(topic: str, configured: str) -> tuple[str, str]:
         "backend": Text,
         "report": Text,
     },
-    primary_inputs=["device", "action", "topic", "message_type"],
+    primary_inputs=["device", "action", "topic", "message_type", "transport"],
     primary_outputs=["stream", "status", "message"],
     live=True,
 )
 def ros2_topic(ctx: dict) -> dict:
     action = str(ctx.get("action") or "status").strip().lower()
-    topic = str(ctx.get("topic") or "/scan").strip() or "/scan"
+    topic = str(ctx.get("topic") if ctx.get("topic") is not None else "/scan").strip()
     configured_type = str(ctx.get("message_type") or "").strip()
+    transport = str(ctx.get("transport") or "auto").strip().lower()
+    stream_options = (
+        ctx.get("stream_options")
+        if isinstance(ctx.get("stream_options"), dict)
+        else {}
+    )
     qos = str(ctx.get("qos") or "sensor_data").strip().lower()
     node_name = str(ctx.get("node_name") or "blacknode_ros2_topic").strip().lstrip("/")
     try:
@@ -304,6 +354,21 @@ def ros2_topic(ctx: dict) -> dict:
     device = ctx.get("device") if isinstance(ctx.get("device"), dict) else {}
     device_id = str(device.get("device_id") or "").strip()
     backend_hint = f"remote:{device_id}" if device_id else rt.detect_backend()["backend"]
+    if not topic:
+        status = {
+            "running": False,
+            "backend": backend_hint,
+            "topic": "",
+            "message_type": configured_type,
+            "service_id": "topic-subscriber:unconfigured",
+            "stale_after_seconds": stale_after_seconds,
+            "state": "unavailable",
+            "error": "topic is not configured",
+        }
+        return rt.ros2_topic_outputs(status, report="ROS2 waiting for a topic")
+    image_requested = transport == "image" or (
+        transport == "auto" and _is_image_message_type(configured_type)
+    )
 
     if action not in {"once", "start", "status", "stop"}:
         status = {
@@ -316,6 +381,93 @@ def ros2_topic(ctx: dict) -> dict:
             "error": f"action must be once, start, status, or stop, got {action!r}",
         }
         return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {status['error']}")
+
+    if image_requested:
+        message_type = configured_type or "sensor_msgs/msg/Image"
+        image_type = _image_encoding(message_type)
+        image_id_source = str(ctx.get("__node_id__") or node_name or topic)
+        image_id = "ros2-image-" + re.sub(
+            r"[^a-z0-9-]+", "-", image_id_source.lower()
+        ).strip("-")
+        image_id = image_id[:64] or "ros2-image"
+        request = {
+            "node_id": str(ctx.get("__node_id__") or image_id),
+            "node_type": "ROS2",
+            "device_id": device_id,
+            "action": action,
+            "topic": topic,
+            "message_type": image_type,
+            "port": int(stream_options.get("port") or 0),
+            "max_fps": float(stream_options.get("max_fps") or 10.0),
+            "max_width": int(stream_options.get("max_width") or 960),
+            "jpeg_quality": int(stream_options.get("jpeg_quality") or 80),
+            "timeout": timeout,
+        }
+        try:
+            if device_id:
+                remote_action = ctx.get("__remote_ros2_image_action__")
+                if not callable(remote_action):
+                    raise RuntimeError(
+                        "paired-device image streaming is available through the Blacknode editor Runtime"
+                    )
+                response = remote_action(request)
+                result = response.get("stream") if isinstance(response, dict) else {}
+                service_id = str(response.get("id") or image_id) if isinstance(response, dict) else image_id
+            elif action == "start":
+                result = rt.start_image_stream(
+                    stream_id=image_id,
+                    topic=topic,
+                    message_type=image_type,
+                    host=str(stream_options.get("host") or "127.0.0.1"),
+                    port=request["port"],
+                    max_fps=request["max_fps"],
+                    max_width=request["max_width"],
+                    jpeg_quality=request["jpeg_quality"],
+                )
+                service_id = image_id
+            elif action == "once":
+                result = rt.capture_image_snapshot(
+                    topic=topic,
+                    message_type=image_type,
+                    timeout=timeout,
+                    output_format="jpeg",
+                    jpeg_quality=request["jpeg_quality"],
+                )
+                service_id = image_id
+            elif action == "stop":
+                result = rt.stop_image_stream(image_id)
+                result.update(ok=True, running=False, state="stopped")
+                service_id = image_id
+            else:
+                result = rt.image_stream_status(image_id)
+                service_id = image_id
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "running": False,
+                "backend": backend_hint,
+                "state": "unavailable",
+                "error": str(exc),
+            }
+            service_id = image_id
+        result = dict(result or {})
+        result.setdefault("backend", backend_hint)
+        if not result.get("ok") and result.get("error"):
+            report = f"ROS2 image FAILED: {result['error']}"
+        elif action == "once":
+            report = f"ROS2 captured one {message_type} frame from {topic}"
+        elif action == "stop":
+            report = f"ROS2 stopped image stream: {topic}"
+        else:
+            report = f"ROS2 image stream {action}: {topic}"
+        return _image_outputs(
+            result,
+            topic=topic,
+            message_type=message_type,
+            service_id=service_id,
+            stale_after_seconds=stale_after_seconds,
+            report=report,
+        )
 
     if device_id:
         remote_action = ctx.get("__remote_ros2_action__")

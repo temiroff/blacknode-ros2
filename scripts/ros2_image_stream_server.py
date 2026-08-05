@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Serve a ROS 2 image topic as a local MJPEG stream.
 
-This helper is launched by the Blacknode CameraROS2Subscribe node. It intentionally
+This helper is launched by the generic Blacknode ROS2 node for image topics. It intentionally
 does not depend on cv_bridge so it can handle common raw encodings with NumPy
 and Pillow in the Blacknode environment.
 """

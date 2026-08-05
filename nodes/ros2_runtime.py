@@ -1645,6 +1645,19 @@ def ros2_topic_outputs(status: dict[str, Any], *, report: str = "") -> dict[str,
         "message_type": message_type,
         "backend": backend,
     }
+    for key in (
+        "transport",
+        "media_type",
+        "stream_url",
+        "snapshot_url",
+        "health_url",
+        "frame_url",
+        "image",
+        "metadata",
+    ):
+        value = status.get(key)
+        if value not in (None, "", {}):
+            stream[key] = value
     health = {
         "kind": "blacknode.stream-status",
         "schema_version": 1,
@@ -1897,12 +1910,12 @@ def _free_docker_stream_port(preferred: int = 0) -> tuple[int, str]:
     }
     if preferred > 0:
         if preferred < start or preferred > end:
-            return 0, f"Docker CameraROS2Subscribe port must be within published range {start}-{end}; set port=0 to auto-pick"
-        return preferred, "" if preferred not in used else f"port {preferred} is already in use by another CameraROS2Subscribe"
+            return 0, f"Docker ROS2 image-stream port must be within published range {start}-{end}; set port=0 to auto-pick"
+        return preferred, "" if preferred not in used else f"port {preferred} is already in use by another ROS2 image stream"
     for port in range(start, end + 1):
         if port not in used:
             return port, ""
-    return 0, f"no free Docker CameraROS2Subscribe port in range {start}-{end}"
+    return 0, f"no free Docker ROS2 image-stream port in range {start}-{end}"
 
 
 def _port_open(host: str, port: int, timeout: float = 0.15) -> bool:
@@ -2339,6 +2352,36 @@ def _start_docker_image_stream(
         "health_url": _streams[stream_id]["health_url"],
         "frame_url": _streams[stream_id]["frame_url"],
         "port": selected_port,
+    }
+
+
+def image_stream_status(stream_id: str) -> dict[str, Any]:
+    """Return the public lifecycle state for one managed image stream."""
+    clean_id = str(stream_id or "").strip()
+    stream = _streams.get(clean_id)
+    if not stream:
+        return {
+            "ok": False,
+            "running": False,
+            "stream_id": clean_id,
+            "backend": "none",
+            "error": "image stream has not been started",
+        }
+    process = stream.get("proc")
+    running = process is not None and process.poll() is None
+    return {
+        "ok": running,
+        "running": running,
+        "stream_id": clean_id,
+        "backend": str(stream.get("backend") or detect_backend().get("backend") or "none"),
+        "stream_url": str(stream.get("url") or ""),
+        "snapshot_url": str(stream.get("snapshot_url") or ""),
+        "health_url": str(stream.get("health_url") or ""),
+        "frame_url": str(stream.get("frame_url") or ""),
+        "port": int(stream.get("port") or 0),
+        "topic": str(stream.get("topic") or ""),
+        "message_type": str(stream.get("message_type") or ""),
+        "error": "" if running else "image stream process is not running",
     }
 
 
