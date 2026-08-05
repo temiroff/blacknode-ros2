@@ -84,3 +84,26 @@ def test_stream_helper_packs_metric_depth_without_json_expanding_pixels(monkeypa
     assert header["height"] == 2
     assert header["encoding"] == "16UC1"
     assert pixels == struct.pack("<HHHH", 100, 500, 1000, 0)
+
+
+def test_stream_helper_renders_fixed_metric_range_and_marks_invalid_pixels(monkeypatch):
+    module = _load_helper(monkeypatch, "ros2_image_stream_server.py")
+    payload = module["_metric_depth_frame"](_depth_message())
+
+    image = module["_metric_depth_preview"](
+        payload,
+        depth_scale=0.001,
+        auto_range=False,
+        near_m=0.1,
+        far_m=1.0,
+        palette="grayscale",
+        invalid_color="magenta",
+    )
+
+    assert image.mode == "RGB"
+    assert image.getpixel((0, 0)) == (255, 255, 255)
+    middle = image.getpixel((1, 0))
+    assert 140 <= middle[0] <= 142
+    assert middle[0] == middle[1] == middle[2]
+    assert image.getpixel((0, 1)) == (0, 0, 0)
+    assert image.getpixel((1, 1)) == (255, 0, 255)

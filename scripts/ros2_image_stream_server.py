@@ -18,6 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 from PIL import Image as PILImage
@@ -154,6 +155,103 @@ def _metric_depth_frame(msg: Image) -> bytes | None:
     return b"BNDEPTH1" + struct.pack("<I", len(header)) + header + raw[:required]
 
 
+def _depth_array_to_pil(
+    depth: np.ndarray,
+    *,
+    near: float | None = None,
+    far: float | None = None,
+    palette: str = "grayscale",
+    invalid_color: str = "black",
+) -> PILImage.Image:
+    valid = np.isfinite(depth) & (depth > 0)
+    if not np.any(valid):
+        if invalid_color == "magenta":
+            pixels = np.empty((*depth.shape, 3), dtype=np.uint8)
+            pixels[:, :] = (255, 0, 255)
+            return PILImage.fromarray(pixels)
+        return PILImage.fromarray(np.zeros(depth.shape, dtype=np.uint8))
+
+    if near is None or far is None:
+        near, far = np.percentile(depth[valid], [2.0, 98.0])
+    near = float(near)
+    far = float(far)
+    if far <= near:
+        far = near + 1.0
+    normalized = np.clip((depth - near) / (far - near), 0.0, 1.0)
+    intensity = np.where(valid, (1.0 - normalized) * 255.0, 0.0).astype(
+        np.uint8
+    )
+    if palette == "grayscale" and invalid_color == "black":
+        return PILImage.fromarray(intensity)
+
+    x = intensity.astype(np.float32) / 255.0
+    if palette == "turbo":
+        coefficients = (
+            (0.13572138, 4.61539260, -42.66032258, 132.13108234, -152.94239396, 59.28637943),
+            (0.09140261, 2.19418839, 4.84296658, -14.18503333, 4.27729857, 2.82956604),
+            (0.10667330, 12.64194608, -60.58204836, 110.36276771, -89.90310912, 27.34824973),
+        )
+        powers = np.stack([np.ones_like(x), x, x**2, x**3, x**4, x**5])
+        rgb = np.stack(
+            [np.clip(np.tensordot(row, powers, axes=(0, 0)), 0.0, 1.0) for row in coefficients],
+            axis=-1,
+        )
+        pixels = (rgb * 255.0).astype(np.uint8)
+    else:
+        pixels = np.repeat(intensity[:, :, None], 3, axis=2)
+    if invalid_color == "magenta":
+        pixels[~valid] = (255, 0, 255)
+    else:
+        pixels[~valid] = (0, 0, 0)
+    return PILImage.fromarray(pixels)
+
+
+def _metric_depth_preview(
+    payload: bytes,
+    *,
+    depth_scale: float,
+    auto_range: bool,
+    near_m: float,
+    far_m: float,
+    palette: str,
+    invalid_color: str,
+) -> PILImage.Image:
+    if not payload.startswith(b"BNDEPTH1") or len(payload) < 12:
+        raise ValueError("invalid metric depth frame")
+    header_size = struct.unpack("<I", payload[8:12])[0]
+    header_end = 12 + header_size
+    if header_end > len(payload):
+        raise ValueError("metric depth frame header is truncated")
+    header = json.loads(payload[12:header_end].decode("utf-8"))
+    height = int(header.get("height") or 0)
+    width = int(header.get("width") or 0)
+    encoding = str(header.get("encoding") or "").strip().lower()
+    bytes_per_pixel = 4 if encoding == "32fc1" else 2
+    if height <= 0 or width <= 0 or encoding not in {"mono16", "16uc1", "32fc1"}:
+        raise ValueError("metric depth frame has unsupported dimensions or encoding")
+    step = int(header.get("step") or width * bytes_per_pixel)
+    raw = payload[header_end:]
+    required = height * step
+    if step < width * bytes_per_pixel or len(raw) < required:
+        raise ValueError("metric depth frame pixels are truncated")
+    dtype = np.dtype(
+        (">f4" if bool(header.get("is_bigendian")) else "<f4")
+        if encoding == "32fc1"
+        else (">u2" if bool(header.get("is_bigendian")) else "<u2")
+    )
+    rows = np.frombuffer(raw[:required], dtype=np.uint8).reshape((height, step))
+    packed = rows[:, : width * bytes_per_pixel].copy()
+    depth_m = packed.view(dtype).reshape((height, width)).astype(np.float32)
+    depth_m *= max(0.0, float(depth_scale))
+    return _depth_array_to_pil(
+        depth_m,
+        near=None if auto_range else near_m,
+        far=None if auto_range else far_m,
+        palette=palette,
+        invalid_color=invalid_color,
+    )
+
+
 def _raw_image_to_pil(msg: Image) -> PILImage.Image:
     height = int(msg.height)
     width = int(msg.width)
@@ -189,17 +287,7 @@ def _raw_image_to_pil(msg: Image) -> PILImage.Image:
         rows = np.frombuffer(raw[:required], dtype=np.uint8).reshape((height, step))
         packed = rows[:, : width * bytes_per_pixel].copy()
         depth = packed.view(dtype).reshape((height, width)).astype(np.float32)
-        valid = np.isfinite(depth) & (depth > 0)
-        if not np.any(valid):
-            return PILImage.fromarray(np.zeros((height, width), dtype=np.uint8))
-        near, far = np.percentile(depth[valid], [2.0, 98.0])
-        if far <= near:
-            far = near + 1.0
-        normalized = np.clip((depth - near) / (far - near), 0.0, 1.0)
-        preview = np.where(valid, (1.0 - normalized) * 255.0, 0.0).astype(
-            np.uint8
-        )
-        return PILImage.fromarray(preview)
+        return _depth_array_to_pil(depth)
     if channels is None:
         raise ValueError(f"unsupported encoding {encoding!r}")
 
@@ -281,6 +369,46 @@ def _jpeg_bytes(image: PILImage.Image, *, max_width: int, quality: int, topic: s
     return _encode_jpeg(img, quality)
 
 
+def _preview_frame(
+    jpeg: bytes | None,
+    metric_frame: bytes | None,
+    query: dict[str, list[str]],
+    args: argparse.Namespace,
+) -> bytes | None:
+    if not metric_frame or not any(key.startswith("depth_") for key in query):
+        return jpeg
+    try:
+        mode = str(query.get("depth_range", ["auto"])[0]).strip().lower()
+        depth_scale = float(query.get("depth_scale", ["1.0"])[0])
+        near_m = float(query.get("depth_near_m", ["0.2"])[0])
+        far_m = float(query.get("depth_far_m", ["2.0"])[0])
+        palette = str(query.get("depth_palette", ["grayscale"])[0]).strip().lower()
+        invalid_color = str(query.get("depth_invalid", ["black"])[0]).strip().lower()
+        if palette not in {"grayscale", "turbo"}:
+            palette = "grayscale"
+        if invalid_color not in {"black", "magenta"}:
+            invalid_color = "black"
+        if depth_scale <= 0.0 or near_m < 0.0 or far_m <= near_m:
+            return jpeg
+        image = _metric_depth_preview(
+            metric_frame,
+            depth_scale=depth_scale,
+            auto_range=mode != "fixed",
+            near_m=near_m,
+            far_m=far_m,
+            palette=palette,
+            invalid_color=invalid_color,
+        )
+        return _jpeg_bytes(
+            image,
+            max_width=int(args.max_width),
+            quality=int(args.jpeg_quality),
+            topic=args.topic,
+        )
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, struct.error):
+        return jpeg
+
+
 def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse.Namespace):
     class Handler(BaseHTTPRequestHandler):
         server_version = "BlacknodeImageStream/0.1"
@@ -289,15 +417,17 @@ def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse
             return
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib API
-            if self.path in ("/", "/index.html"):
+            request = urlsplit(self.path)
+            query = parse_qs(request.query)
+            if request.path in ("/", "/index.html"):
                 self._index()
-            elif self.path.startswith("/stream.mjpg"):
-                self._stream()
-            elif self.path.startswith("/snapshot.jpg"):
-                self._snapshot()
-            elif self.path.startswith("/health.json"):
+            elif request.path == "/stream.mjpg":
+                self._stream(query)
+            elif request.path == "/snapshot.jpg":
+                self._snapshot(query)
+            elif request.path == "/health.json":
                 self._health()
-            elif self.path.startswith("/frame.bin"):
+            elif request.path == "/frame.bin":
                 self._metric_frame()
             else:
                 self.send_error(404)
@@ -331,9 +461,11 @@ def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse
             self.end_headers()
             self.wfile.write(body)
 
-        def _snapshot(self) -> None:
+        def _snapshot(self, query: dict[str, list[str]]) -> None:
             with store.condition:
                 frame = store.jpeg
+                metric_frame = store.metric_frame
+            frame = _preview_frame(frame, metric_frame, query, args)
             if not frame:
                 frame = _placeholder_jpeg(store, args, quality=int(args.jpeg_quality))
             self.send_response(200)
@@ -359,7 +491,7 @@ def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse
             self.end_headers()
             self.wfile.write(frame)
 
-        def _stream(self) -> None:
+        def _stream(self, query: dict[str, list[str]]) -> None:
             boundary = "blacknode-frame"
             self.send_response(200)
             self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={boundary}")
@@ -372,6 +504,7 @@ def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse
                 with store.condition:
                     store.condition.wait(timeout=0.5)
                     frame = store.jpeg
+                    metric_frame = store.metric_frame
                     count = store.frame_count
                 now = time.monotonic()
                 if not frame:
@@ -383,6 +516,7 @@ def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse
                     continue
                 else:
                     last_count = count
+                    frame = _preview_frame(frame, metric_frame, query, args)
                 try:
                     self.wfile.write(f"--{boundary}\r\n".encode("ascii"))
                     self.wfile.write(b"Content-Type: image/jpeg\r\n")
