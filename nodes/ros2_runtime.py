@@ -2171,6 +2171,7 @@ def start_image_stream(
             "stream_url": existing.get("url", ""),
             "snapshot_url": existing.get("snapshot_url", ""),
             "health_url": existing.get("health_url", ""),
+            "frame_url": existing.get("frame_url", ""),
         }
 
     stop_image_stream(stream_id)
@@ -2213,6 +2214,7 @@ def start_image_stream(
         "url": url,
         "snapshot_url": f"http://{host}:{selected_port}/snapshot.jpg",
         "health_url": f"http://{host}:{selected_port}/health.json",
+        "frame_url": f"http://{host}:{selected_port}/frame.bin",
         "topic": topic,
         "message_type": message_type,
     }
@@ -2223,6 +2225,7 @@ def start_image_stream(
         "stream_url": url,
         "snapshot_url": _streams[stream_id]["snapshot_url"],
         "health_url": _streams[stream_id]["health_url"],
+        "frame_url": _streams[stream_id]["frame_url"],
         "port": selected_port,
     }
 
@@ -2258,6 +2261,7 @@ def _start_docker_image_stream(
             "stream_url": existing.get("url", ""),
             "snapshot_url": existing.get("snapshot_url", ""),
             "health_url": existing.get("health_url", ""),
+            "frame_url": existing.get("frame_url", ""),
         }
 
     stop_image_stream(stream_id)
@@ -2320,6 +2324,7 @@ def _start_docker_image_stream(
         "url": url,
         "snapshot_url": f"http://{public_host}:{selected_port}/snapshot.jpg",
         "health_url": f"http://{public_host}:{selected_port}/health.json",
+        "frame_url": f"http://{public_host}:{selected_port}/frame.bin",
         "topic": topic,
         "message_type": message_type,
         "marker": marker,
@@ -2332,6 +2337,7 @@ def _start_docker_image_stream(
         "stream_url": url,
         "snapshot_url": _streams[stream_id]["snapshot_url"],
         "health_url": _streams[stream_id]["health_url"],
+        "frame_url": _streams[stream_id]["frame_url"],
         "port": selected_port,
     }
 

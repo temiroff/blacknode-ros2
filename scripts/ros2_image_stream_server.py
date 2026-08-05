@@ -11,6 +11,7 @@ import argparse
 import json
 import re
 import signal
+import struct
 import sys
 import threading
 import time
@@ -35,14 +36,21 @@ class FrameStore:
     def __init__(self) -> None:
         self.condition = threading.Condition()
         self.jpeg: bytes | None = None
+        self.metric_frame: bytes | None = None
         self.metadata: dict[str, Any] = {}
         self.frame_count = 0
         self.error = ""
         self.last_encoded_at = 0.0
 
-    def put(self, jpeg: bytes, metadata: dict[str, Any]) -> None:
+    def put(
+        self,
+        jpeg: bytes,
+        metadata: dict[str, Any],
+        metric_frame: bytes | None = None,
+    ) -> None:
         with self.condition:
             self.jpeg = jpeg
+            self.metric_frame = metric_frame
             self.metadata = metadata
             self.frame_count += 1
             self.error = ""
@@ -105,6 +113,45 @@ def _raw_depth_summary(msg: Image) -> dict[str, Any]:
         "median": float(median),
         "p95": float(p95),
     }
+
+
+def _metric_depth_frame(msg: Image) -> bytes | None:
+    """Pack one metric depth image as bounded binary plus a small JSON header."""
+    height = int(msg.height)
+    width = int(msg.width)
+    encoding = str(msg.encoding or "").strip()
+    normalized_encoding = encoding.lower()
+    if height <= 0 or width <= 0 or normalized_encoding not in {
+        "mono16",
+        "16uc1",
+        "32fc1",
+    }:
+        return None
+    bytes_per_pixel = 4 if normalized_encoding == "32fc1" else 2
+    step = int(msg.step or width * bytes_per_pixel)
+    if step < width * bytes_per_pixel:
+        return None
+    raw = bytes(msg.data)
+    required = height * step
+    if required <= 0 or required > 256 * 1024 * 1024 or len(raw) < required:
+        return None
+    header = json.dumps(
+        {
+            "kind": "blacknode.metric-depth-frame",
+            "schema_version": 1,
+            "width": width,
+            "height": height,
+            "step": step,
+            "encoding": encoding,
+            "is_bigendian": bool(msg.is_bigendian),
+            "frame_id": str(msg.header.frame_id),
+            "stamp_sec": int(msg.header.stamp.sec),
+            "stamp_nanosec": int(msg.header.stamp.nanosec),
+            "received_at_ns": time.time_ns(),
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return b"BNDEPTH1" + struct.pack("<I", len(header)) + header + raw[:required]
 
 
 def _raw_image_to_pil(msg: Image) -> PILImage.Image:
@@ -250,6 +297,8 @@ def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse
                 self._snapshot()
             elif self.path.startswith("/health.json"):
                 self._health()
+            elif self.path.startswith("/frame.bin"):
+                self._metric_frame()
             else:
                 self.send_error(404)
 
@@ -289,6 +338,22 @@ def _make_handler(store: FrameStore, stop_event: threading.Event, args: argparse
                 frame = _placeholder_jpeg(store, args, quality=int(args.jpeg_quality))
             self.send_response(200)
             self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(frame)))
+            self.end_headers()
+            self.wfile.write(frame)
+
+        def _metric_frame(self) -> None:
+            with store.condition:
+                frame = store.metric_frame
+            if not frame:
+                self.send_error(503, "metric depth frame unavailable")
+                return
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/vnd.blacknode.metric-depth-frame",
+            )
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(frame)))
             self.end_headers()
@@ -372,6 +437,7 @@ def _spin_ros(store: FrameStore, stop_event: threading.Event, args: argparse.Nam
                     topic=args.topic,
                 ),
                 metadata,
+                _metric_depth_frame(msg) if args.message_type == "raw" else None,
             )
         except Exception as exc:  # keep stream process alive for later valid frames
             store.fail(f"{type(exc).__name__}: {exc}")

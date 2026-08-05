@@ -1,6 +1,7 @@
 """Depth metadata emitted by the generic ROS 2 image helpers."""
 import runpy
 import struct
+import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -67,3 +68,19 @@ def test_snapshot_metadata_marks_receive_time_and_depth_summary(monkeypatch):
 
     assert metadata["received_at_ns"] > 0
     assert metadata["depth_summary_raw"]["valid_count"] == 3
+
+
+def test_stream_helper_packs_metric_depth_without_json_expanding_pixels(monkeypatch):
+    module = _load_helper(monkeypatch, "ros2_image_stream_server.py")
+    payload = module["_metric_depth_frame"](_depth_message())
+
+    assert payload.startswith(b"BNDEPTH1")
+    header_size = struct.unpack("<I", payload[8:12])[0]
+    header = json.loads(payload[12:12 + header_size])
+    pixels = payload[12 + header_size:]
+
+    assert header["kind"] == "blacknode.metric-depth-frame"
+    assert header["width"] == 2
+    assert header["height"] == 2
+    assert header["encoding"] == "16UC1"
+    assert pixels == struct.pack("<HHHH", 100, 500, 1000, 0)
