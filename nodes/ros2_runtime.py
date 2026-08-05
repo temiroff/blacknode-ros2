@@ -73,7 +73,7 @@ def runtime_status() -> dict[str, Any]:
         proc = item.get("proc")
         running = bool(proc is not None and proc.poll() is None)
         if not running:
-            _streams.pop(stream_id, None)
+            _close_stream_error_log(_streams.pop(stream_id, None))
             continue
         live_streams.append({
             "stream_id": stream_id,
@@ -325,6 +325,8 @@ def _native_ros_python() -> tuple[str, str]:
     candidates = [
         str(os.environ.get("BLACKNODE_ROS2_PYTHON") or "").strip(),
         str(shutil.which("python3") or "").strip(),
+        "/usr/bin/python3" if os.name != "nt" else "",
+        "/usr/local/bin/python3" if os.name != "nt" else "",
         str(sys.executable or "").strip(),
     ]
     checked: set[str] = set()
@@ -355,6 +357,63 @@ def _native_ros_python() -> tuple[str, str]:
         "import rclpy. Set BLACKNODE_ROS2_PYTHON to the ROS Python executable. "
         + ("Checked: " + "; ".join(errors) if errors else "No candidates were found.")
     )
+
+
+def _native_image_python() -> tuple[str, str]:
+    """Resolve a ROS-compatible interpreter with the image helper dependencies."""
+    interpreter, error = _native_ros_python()
+    if not interpreter:
+        return "", error
+    try:
+        probe = _run(
+            [
+                interpreter,
+                "-c",
+                (
+                    "import numpy; import PIL; import rclpy; import sensor_msgs; "
+                    "from sensor_msgs.msg import Image"
+                ),
+            ],
+            10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "", (
+            f"Could not check ROS image dependencies with {interpreter}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    if probe.returncode == 0:
+        return interpreter, ""
+    detail = (probe.stderr or probe.stdout or "image dependency import failed").strip()
+    return "", (
+        f"ROS image streaming requires NumPy and Pillow in {interpreter}. "
+        "Install python3-numpy and python3-pil for the ROS Python environment, "
+        "or set BLACKNODE_ROS2_PYTHON to a compatible interpreter. "
+        f"Import check: {detail}"
+    )
+
+
+def _stream_error_detail(error_log: Any) -> str:
+    """Read the bounded tail of a helper's temporary stderr log."""
+    if error_log is None:
+        return ""
+    try:
+        error_log.flush()
+        error_log.seek(0)
+        detail = str(error_log.read() or "").strip()
+        error_log.seek(0, os.SEEK_END)
+        return detail[-4000:]
+    except Exception:
+        return ""
+
+
+def _close_stream_error_log(item: dict[str, Any] | None) -> None:
+    error_log = (item or {}).get("error_log")
+    if error_log is None:
+        return
+    try:
+        error_log.close()
+    except Exception:
+        pass
 
 
 def ensure_container() -> str | None:
@@ -2115,8 +2174,11 @@ def capture_image_snapshot(
         )
         run_args = ["docker", "exec", CONTAINER, "bash", "-lc", shell]
     else:
+        ros_python, python_error = _native_image_python()
+        if not ros_python:
+            return {"ok": False, "backend": backend, "error": python_error}
         run_args = [
-            sys.executable,
+            ros_python,
             str(script),
             *helper_args,
         ]
@@ -2163,6 +2225,9 @@ def start_image_stream(
     script = _stream_script()
     if not script.exists():
         return {"ok": False, "backend": backend, "error": f"stream helper not found: {script}"}
+    ros_python, python_error = _native_image_python()
+    if not ros_python:
+        return {"ok": False, "backend": backend, "error": python_error}
 
     existing = _streams.get(stream_id)
     if (
@@ -2190,7 +2255,7 @@ def start_image_stream(
     stop_image_stream(stream_id)
     selected_port = int(port) if int(port) > 0 else _free_port(host)
     args = [
-        sys.executable,
+        ros_python,
         str(script),
         "--topic",
         topic,
@@ -2207,20 +2272,41 @@ def start_image_stream(
         "--jpeg-quality",
         str(jpeg_quality),
     ]
+    error_log = tempfile.TemporaryFile(
+        mode="w+t",
+        encoding="utf-8",
+        errors="replace",
+    )
     try:
-        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=error_log,
+            start_new_session=True,
+        )
     except Exception as exc:
+        error_log.close()
         return {"ok": False, "backend": backend, "error": f"{type(exc).__name__}: {exc}"}
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            return {"ok": False, "backend": backend, "error": "stream helper exited before opening its HTTP port"}
+            detail = _stream_error_detail(error_log)
+            error_log.close()
+            error = "stream helper exited before opening its HTTP port"
+            if detail:
+                error = f"{error}: {detail}"
+            return {"ok": False, "backend": backend, "error": error}
         if _stream_http_ready(host, selected_port):
             break
         time.sleep(0.1)
     else:
         _terminate_process(proc)
-        return {"ok": False, "backend": backend, "error": f"stream helper did not answer HTTP on http://{host}:{selected_port}"}
+        detail = _stream_error_detail(error_log)
+        error_log.close()
+        error = f"stream helper did not answer HTTP on http://{host}:{selected_port}"
+        if detail:
+            error = f"{error}: {detail}"
+        return {"ok": False, "backend": backend, "error": error}
     url = f"http://{host}:{selected_port}/stream.mjpg"
     _streams[stream_id] = {
         "proc": proc,
@@ -2230,6 +2316,7 @@ def start_image_stream(
         "frame_url": f"http://{host}:{selected_port}/frame.bin",
         "topic": topic,
         "message_type": message_type,
+        "error_log": error_log,
     }
     return {
         "ok": True,
@@ -2369,6 +2456,7 @@ def image_stream_status(stream_id: str) -> dict[str, Any]:
         }
     process = stream.get("proc")
     running = process is not None and process.poll() is None
+    detail = "" if running else _stream_error_detail(stream.get("error_log"))
     return {
         "ok": running,
         "running": running,
@@ -2381,7 +2469,7 @@ def image_stream_status(stream_id: str) -> dict[str, Any]:
         "port": int(stream.get("port") or 0),
         "topic": str(stream.get("topic") or ""),
         "message_type": str(stream.get("message_type") or ""),
-        "error": "" if running else "image stream process is not running",
+        "error": "" if running else (detail or "image stream process is not running"),
     }
 
 
@@ -2399,4 +2487,5 @@ def stop_image_stream(stream_id: str = "") -> dict[str, Any]:
             killed = result.returncode in (0, 1)
         if _terminate_process(item["proc"]) or killed:
             stopped += 1
+        _close_stream_error_log(item)
     return {"ok": True, "backend": _passive_backend(), "stopped": stopped}

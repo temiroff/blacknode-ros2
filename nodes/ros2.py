@@ -353,6 +353,27 @@ def ros2_topic(ctx: dict) -> dict:
         stale_after_seconds = 2.0
     device = ctx.get("device") if isinstance(ctx.get("device"), dict) else {}
     device_id = str(device.get("device_id") or "").strip()
+    connected_device_target = bool(
+        device.get("kind") == "blacknode.compute-device-target"
+        or "configured" in device
+        or "device_name" in device
+    )
+    if connected_device_target and not device_id:
+        error = (
+            "no compute device is selected; choose a device in the connected "
+            "ComputeDevice node, then run the workflow again"
+        )
+        status = {
+            "running": False,
+            "backend": "none",
+            "topic": topic,
+            "message_type": configured_type,
+            "service_id": f"topic-subscriber:{topic or 'unconfigured'}",
+            "stale_after_seconds": stale_after_seconds,
+            "state": "unavailable",
+            "error": error,
+        }
+        return rt.ros2_topic_outputs(status, report=f"ROS2 FAILED: {error}")
     backend_hint = f"remote:{device_id}" if device_id else rt.detect_backend()["backend"]
     if not topic:
         status = {
@@ -452,14 +473,29 @@ def ros2_topic(ctx: dict) -> dict:
             service_id = image_id
         result = dict(result or {})
         result.setdefault("backend", backend_hint)
+        if action == "start" and result.get("ok"):
+            result.setdefault("running", True)
+            result.setdefault("state", "waiting")
+            result.setdefault("source_fresh", False)
+            result.setdefault("received", 0)
         if not result.get("ok") and result.get("error"):
             report = f"ROS2 image FAILED: {result['error']}"
         elif action == "once":
             report = f"ROS2 captured one {message_type} frame from {topic}"
         elif action == "stop":
             report = f"ROS2 stopped image stream: {topic}"
+        elif result.get("running") and not result.get("source_fresh"):
+            report = (
+                f"ROS2 image waiting for frames from {topic} via "
+                f"{result.get('backend', backend_hint)}; the helper is running. "
+                "Verify the selected compute device, topic publisher, and ROS domain "
+                "if frames do not arrive."
+            )
         else:
-            report = f"ROS2 image stream {action}: {topic}"
+            report = (
+                f"ROS2 image {str(result.get('state') or action)}: {topic} via "
+                f"{result.get('backend', backend_hint)}"
+            )
         return _image_outputs(
             result,
             topic=topic,
