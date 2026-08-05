@@ -1258,6 +1258,74 @@ def test_native_ros_python_prefers_system_interpreter_with_rclpy(monkeypatch):
     assert calls[0][0][0] == "/usr/bin/python3"
 
 
+def test_native_ros_python_falls_back_from_runtime_venv_to_system(monkeypatch):
+    calls = []
+    monkeypatch.delenv("BLACKNODE_ROS2_PYTHON", raising=False)
+    monkeypatch.setattr(rt.os, "name", "posix")
+    monkeypatch.setattr(
+        rt.shutil,
+        "which",
+        lambda name: "/opt/blacknode/runtime/.venv/bin/python3",
+    )
+    monkeypatch.setattr(rt.sys, "executable", "/opt/blacknode/runtime/.venv/bin/python")
+
+    def probe(command, timeout):
+        calls.append((command, timeout))
+        return subprocess.CompletedProcess(
+            command,
+            0 if command[0] == "/usr/bin/python3" else 1,
+            "",
+            "rclpy unavailable",
+        )
+
+    monkeypatch.setattr(rt, "_run", probe)
+
+    interpreter, error = rt._native_ros_python()
+
+    assert interpreter == "/usr/bin/python3"
+    assert error == ""
+    assert calls[0][0][0] == "/opt/blacknode/runtime/.venv/bin/python3"
+    assert calls[1][0][0] == "/usr/bin/python3"
+
+
+def test_native_image_python_checks_dependencies_in_ros_interpreter(monkeypatch):
+    calls = []
+    monkeypatch.setattr(rt, "_native_ros_python", lambda: ("/usr/bin/python3", ""))
+
+    def probe(command, timeout):
+        calls.append((command, timeout))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(rt, "_run", probe)
+
+    interpreter, error = rt._native_image_python()
+
+    assert interpreter == "/usr/bin/python3"
+    assert error == ""
+    assert calls[0][0][0] == "/usr/bin/python3"
+    assert "import numpy" in calls[0][0][2]
+
+
+def test_native_image_python_reports_missing_dependencies(monkeypatch):
+    monkeypatch.setattr(rt, "_native_ros_python", lambda: ("/usr/bin/python3", ""))
+    monkeypatch.setattr(
+        rt,
+        "_run",
+        lambda command, timeout: subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "ModuleNotFoundError: No module named 'PIL'",
+        ),
+    )
+
+    interpreter, error = rt._native_image_python()
+
+    assert interpreter == ""
+    assert "python3-numpy and python3-pil" in error
+    assert "No module named 'PIL'" in error
+
+
 def test_topic_subscriber_normalizes_nonfinite_sensor_values(monkeypatch):
     rclpy = ModuleType("rclpy")
     rclpy_node = ModuleType("rclpy.node")
@@ -1433,6 +1501,34 @@ def test_generic_ros2_routes_connected_compute_device_to_editor_runtime(monkeypa
     assert result["message"]["ranges"] == [1.0, 2.0]
 
 
+def test_generic_ros2_rejects_connected_compute_device_without_selection(monkeypatch):
+    monkeypatch.setattr(
+        rt,
+        "detect_backend",
+        lambda refresh=False: pytest.fail(
+            "an unconfigured connected device must not fall back to local ROS"
+        ),
+    )
+
+    result = _NODE_REGISTRY["ROS2"]({
+        "device": {
+            "kind": "blacknode.compute-device-target",
+            "configured": False,
+            "device_id": "",
+            "device_name": "",
+        },
+        "action": "start",
+        "topic": "/depth_cam/rgb0/image_raw",
+        "message_type": "sensor_msgs/msg/Image",
+    })
+
+    assert result["running"] is False
+    assert result["backend"] == "none"
+    assert result["status"]["state"] == "unavailable"
+    assert "choose a device" in result["status"]["error"]
+    assert "ComputeDevice" in result["report"]
+
+
 def test_generic_ros2_routes_image_topics_through_paired_image_transport():
     calls = []
 
@@ -1464,6 +1560,29 @@ def test_generic_ros2_routes_image_topics_through_paired_image_transport():
     assert result["stream"]["stream_url"].endswith("/stream.mjpg")
     assert calls[0]["message_type"] == "raw"
     assert calls[0]["device_id"] == "jetson"
+
+
+def test_generic_ros2_local_image_start_reports_waiting_for_frames(monkeypatch):
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native"})
+    monkeypatch.setattr(rt, "start_image_stream", lambda **kwargs: {
+        "ok": True,
+        "backend": "native",
+        "stream_url": "http://127.0.0.1:39000/stream.mjpg",
+        "snapshot_url": "http://127.0.0.1:39000/snapshot.jpg",
+        "health_url": "http://127.0.0.1:39000/health.json",
+    })
+
+    result = _NODE_REGISTRY["ROS2"]({
+        "action": "start",
+        "topic": "/depth_cam/rgb0/image_raw",
+        "message_type": "sensor_msgs/msg/Image",
+    })
+
+    assert result["running"] is True
+    assert result["status"]["state"] == "waiting"
+    assert result["status"]["worker_alive"] is True
+    assert "helper is running" in result["report"]
+    assert "selected compute device" in result["report"]
 
 
 def test_generic_ros2_captures_local_image_once(monkeypatch):
@@ -2249,6 +2368,97 @@ def test_host_camera_url_is_rewritten_so_the_container_can_reach_the_host():
     )
     assert rt.container_reachable_url("http://localhost:8080/s") == "http://host.docker.internal:8080/s"
     assert rt.container_reachable_url("http://192.168.1.5:8080/s") == "http://192.168.1.5:8080/s"
+
+
+def test_native_image_snapshot_uses_ros_compatible_python(monkeypatch):
+    calls = []
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native"})
+    monkeypatch.setattr(rt, "_native_image_python", lambda: ("/usr/bin/python3", ""))
+
+    def run(command, timeout):
+        calls.append((command, timeout))
+        return subprocess.CompletedProcess(command, 0, '{"ok": true, "image": "data:image/jpeg;base64,eA=="}', "")
+
+    monkeypatch.setattr(rt, "_run", run)
+
+    result = rt.capture_image_snapshot(
+        topic="/depth_cam/rgb0/image_raw",
+        message_type="sensor_msgs/msg/Image",
+        timeout=2.0,
+        output_format="jpeg",
+        jpeg_quality=80,
+    )
+
+    assert result["ok"] is True
+    assert calls[0][0][0] == "/usr/bin/python3"
+
+
+def test_native_image_stream_uses_ros_compatible_python(monkeypatch):
+    captured = {}
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native"})
+    monkeypatch.setattr(rt, "_native_image_python", lambda: ("/usr/bin/python3", ""))
+    monkeypatch.setattr(rt, "_free_port", lambda host: 39001)
+    monkeypatch.setattr(rt, "_stream_http_ready", lambda host, port, timeout=0.6: True)
+    monkeypatch.setattr(rt.subprocess, "Popen", popen)
+    monkeypatch.setattr(rt, "_terminate_process", lambda proc: True)
+    rt._streams.clear()
+
+    result = rt.start_image_stream(
+        stream_id="rgb",
+        topic="/depth_cam/rgb0/image_raw",
+        message_type="sensor_msgs/msg/Image",
+        host="0.0.0.0",
+        port=0,
+        max_fps=15.0,
+        max_width=960,
+        jpeg_quality=82,
+    )
+
+    assert result["ok"] is True
+    assert captured["command"][0] == "/usr/bin/python3"
+    assert captured["kwargs"]["stderr"] is not subprocess.DEVNULL
+    rt.stop_image_stream("rgb")
+
+
+def test_native_image_stream_surfaces_helper_startup_error(monkeypatch):
+    class FailedProc:
+        def poll(self):
+            return 2
+
+    def popen(command, **kwargs):
+        kwargs["stderr"].write("missing ROS 2 Python modules: rclpy ABI mismatch\n")
+        kwargs["stderr"].flush()
+        return FailedProc()
+
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native"})
+    monkeypatch.setattr(rt, "_native_image_python", lambda: ("/usr/bin/python3", ""))
+    monkeypatch.setattr(rt, "_free_port", lambda host: 39001)
+    monkeypatch.setattr(rt.subprocess, "Popen", popen)
+    rt._streams.clear()
+
+    result = rt.start_image_stream(
+        stream_id="rgb",
+        topic="/depth_cam/rgb0/image_raw",
+        message_type="sensor_msgs/msg/Image",
+        host="0.0.0.0",
+        port=0,
+        max_fps=15.0,
+        max_width=960,
+        jpeg_quality=82,
+    )
+
+    assert result["ok"] is False
+    assert "rclpy ABI mismatch" in result["error"]
 
 
 def test_docker_stream_waits_for_real_http_not_just_an_open_port(monkeypatch):

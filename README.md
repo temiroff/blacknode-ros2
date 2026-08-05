@@ -25,6 +25,12 @@ paired device Runtime; leave it empty to subscribe locally. It outputs the
 latest message plus portable stream and freshness status records. Advanced topic publication, relay, and discovery remain
 available through the `ROS2Topic*` nodes.
 
+When a `ComputeDevice` node is connected but has no selection, `ROS2` reports
+that configuration error and does not silently fall back to the local Runtime.
+Image streams distinguish a running helper that is waiting for its first frame
+from a helper startup failure. Startup failures include the underlying Python,
+ROS, or dependency error when the helper provides one.
+
 Native topic workers automatically use the Python interpreter compatible with the sourced ROS 2 distribution; set `BLACKNODE_ROS2_PYTHON` only when that interpreter is outside `PATH`.
 
 ## Included workflows
