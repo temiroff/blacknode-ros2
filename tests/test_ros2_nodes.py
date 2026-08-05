@@ -252,7 +252,8 @@ def test_ros2_has_generic_managed_stream_contract():
     ros2 = _NODE_REGISTRY["ROS2"]
 
     assert ros2._bn_inputs == [
-        "trigger", "device", "action", "topic", "message_type", "node_name", "history",
+        "trigger", "device", "action", "topic", "message_type", "transport",
+        "stream_options", "node_name", "history",
         "timeout", "stale_after_seconds", "qos",
     ]
     assert ros2._bn_input_choices["action"] == ["once", "start", "status", "stop"]
@@ -260,7 +261,7 @@ def test_ros2_has_generic_managed_stream_contract():
         "running", "message", "messages", "stream", "status", "received",
         "backend", "report",
     ]
-    assert ros2._bn_primary_inputs == ["device", "action", "topic", "message_type"]
+    assert ros2._bn_primary_inputs == ["device", "action", "topic", "message_type", "transport"]
     assert ros2._bn_primary_outputs == ["stream", "status", "message"]
     assert ros2._bn_live_capable is True
 
@@ -333,7 +334,7 @@ def test_capability_nodes_are_not_owned_by_the_integration_layer():
     this one -- that is what keeps the ROS 2 layer free of domain verticals.
     """
     for name in [
-        "CameraROS2Subscribe", "CameraROS2Publish", "CameraROS2Http",
+        "CameraROS2Publish", "CameraROS2Http",
         "ROS2JointState", "ROS2SetJoint", "ROS2ManualMove", "ROS2MotionDashboard",
     ]:
         owner = getattr(_NODE_REGISTRY.get(name), "_bn_package", "")
@@ -935,6 +936,34 @@ def test_empty_stream_stop_never_probes_or_starts_docker(monkeypatch):
     assert result == {"ok": True, "backend": "none", "stopped": 0}
 
 
+def test_image_stream_status_exposes_urls_without_process_handle(monkeypatch):
+    class FakeProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(rt, "_streams", {
+        "front-depth": {
+            "proc": FakeProc(),
+            "backend": "native",
+            "url": "http://0.0.0.0:39001/stream.mjpg",
+            "snapshot_url": "http://0.0.0.0:39001/snapshot.jpg",
+            "health_url": "http://0.0.0.0:39001/health.json",
+            "frame_url": "http://0.0.0.0:39001/frame.bin",
+            "port": 39001,
+            "topic": "/camera/depth/image_raw",
+            "message_type": "raw",
+        }
+    })
+
+    result = rt.image_stream_status("front-depth")
+
+    assert result["ok"] is True
+    assert result["running"] is True
+    assert result["frame_url"].endswith("/frame.bin")
+    assert result["topic"] == "/camera/depth/image_raw"
+    assert "proc" not in result
+
+
 def test_detect_backend_launches_docker_desktop_when_daemon_is_down(monkeypatch):
     rt._cached_backend = None
     monkeypatch.setattr(rt.shutil, "which", lambda name: None if name == "ros2" else "/usr/bin/docker")
@@ -1402,6 +1431,58 @@ def test_generic_ros2_routes_connected_compute_device_to_editor_runtime(monkeypa
     assert captured["topic"] == "/scan"
     assert result["received"] == 4
     assert result["message"]["ranges"] == [1.0, 2.0]
+
+
+def test_generic_ros2_routes_image_topics_through_paired_image_transport():
+    calls = []
+
+    def remote(request):
+        calls.append(request)
+        return {
+            "id": "editor-image-rgb",
+            "stream": {
+                "ok": True,
+                "running": True,
+                "backend": "remote:jetson",
+                "stream_url": "http://jetson.local:19001/stream.mjpg",
+                "snapshot_url": "http://jetson.local:19001/snapshot.jpg",
+                "health_url": "http://jetson.local:19001/health",
+            },
+        }
+
+    result = _NODE_REGISTRY["ROS2"]({
+        "device": {"device_id": "jetson"},
+        "action": "start",
+        "topic": "/camera/image_raw",
+        "message_type": "sensor_msgs/msg/Image",
+        "__node_id__": "rgb",
+        "__remote_ros2_image_action__": remote,
+    })
+
+    assert result["running"] is True
+    assert result["stream"]["transport"] == "http-image"
+    assert result["stream"]["stream_url"].endswith("/stream.mjpg")
+    assert calls[0]["message_type"] == "raw"
+    assert calls[0]["device_id"] == "jetson"
+
+
+def test_generic_ros2_captures_local_image_once(monkeypatch):
+    monkeypatch.setattr(rt, "capture_image_snapshot", lambda **kwargs: {
+        "ok": True,
+        "backend": "native",
+        "image": "data:image/jpeg;base64,AA==",
+        "metadata": {"width": 640, "height": 480, "encoding": "rgb8"},
+    })
+
+    result = _NODE_REGISTRY["ROS2"]({
+        "action": "once",
+        "topic": "/camera/image_raw",
+        "message_type": "sensor_msgs/msg/Image",
+    })
+
+    assert result["stream"]["transport"] == "inline-image"
+    assert result["stream"]["image"].startswith("data:image/jpeg")
+    assert result["message"]["width"] == 640
 
 
 def test_generic_ros2_remote_target_is_structurally_unavailable_outside_editor():
@@ -2218,7 +2299,7 @@ def test_docker_stream_port_allocator_uses_runtime_state(monkeypatch):
 
     assert rt._free_docker_stream_port() == (39001, "")
     assert rt._free_docker_stream_port(39002) == (39002, "")
-    assert rt._free_docker_stream_port(38999)[1].startswith("Docker CameraROS2Subscribe port must be within")
+    assert rt._free_docker_stream_port(38999)[1].startswith("Docker ROS2 image-stream port must be within")
 
 
 def test_runtime_stop_clears_streams_managed_runs_and_detached(monkeypatch):
