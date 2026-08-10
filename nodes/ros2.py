@@ -1110,8 +1110,7 @@ def ros2_launch(ctx: dict) -> dict:
     workspace_path = str(ctx.get("workspace_path") or "").strip()
 
     if action == "stop":
-        pattern = str(ctx.get("stop_pattern") or "").strip() or f"ros2 launch {package}".strip() or "ros2 launch"
-        result = rt.stop_ros2_managed(run_id, pattern=pattern)
+        result = rt.stop_ros2_managed(run_id)
         if result["ok"]:
             return {
                 "launched": False,
@@ -1213,7 +1212,7 @@ def ros2_run(ctx: dict) -> dict:
     pattern = " ".join(part for part in ("ros2", "run", package, executable) if part)
 
     if action == "stop":
-        result = rt.stop_ros2_managed(run_id, pattern=pattern or "ros2 run")
+        result = rt.stop_ros2_managed(run_id)
         if result.get("ok"):
             return {
                 "running": False,

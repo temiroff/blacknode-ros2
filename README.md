@@ -52,6 +52,9 @@ blacknode packages setup blacknode-ros2
 - Stale detection, joint state, faults, stop, or shutdown suppress commands.
 - Rosbridge has no Blacknode pairing authentication; expose it only on a trusted network.
 - Managed subscriptions, processes, and streams have explicit stop paths.
+- Native managed processes are stopped by their owned process handles. Host
+  command-pattern matching is not used, so an identical vendor `ros2 launch`
+  process is never selected for shutdown.
 
 ```powershell
 python -m pytest packages/blacknode-ros2/tests
