@@ -886,7 +886,13 @@ def run_ros2_managed(
     workspace_path: str = "",
 ) -> dict[str, Any]:
     """Start one named background ``ros2 <args>`` process, optionally in an overlay."""
-    stop_ros2_managed(key, pattern=f"ros2 {shlex.join(args)}")
+    # Reconcile only a process that this runtime instance actually owns.  A
+    # command-pattern fallback can match a robot-vendor launch with the same
+    # package and launch file, which would let starting a Blacknode session
+    # terminate the robot's normal bringup.  Native children remain in the
+    # Runtime systemd control group and are stopped through their Popen handle
+    # or by systemd when Runtime exits.
+    stop_ros2_managed(key)
     backend = detect_backend()["backend"]
     if backend == "none":
         return {"ok": False, "backend": backend, "error": _NO_BACKEND_HELP}
@@ -1460,25 +1466,32 @@ def wait_for_topic_interfaces(
 
 
 def stop_ros2_managed(key: str, pattern: str = "") -> dict[str, Any]:
-    """Stop one named background process."""
+    """Stop one named background process owned by Blacknode.
+
+    ``pattern`` remains accepted for saved-node and third-party compatibility,
+    but native process matching is intentionally not used: an identical ROS 2
+    command may belong to the robot's vendor bringup.  Docker matching is safe
+    only for the internally recorded pattern in Blacknode's dedicated helper
+    container.
+    """
     backend = detect_backend()["backend"]
     stopped = 0
     proc = _managed_detached.pop(key, None)
     docker_pattern = _managed_docker_patterns.pop(key, "")
-    pattern = pattern or docker_pattern
     if proc is not None and _terminate_process(proc):
         stopped += 1
-    if backend == "native" and pattern and shutil.which("pkill"):
-        result = _run(["pkill", "-f", pattern], 15)
+    if backend == "docker" and docker_pattern:
+        result = _run(["docker", "exec", CONTAINER, "pkill", "-f", docker_pattern], 15)
         if result.returncode not in (0, 1):
             return {"ok": False, "backend": backend, "stopped": stopped, "error": result.stderr.strip() or "pkill failed"}
         stopped += 1 if result.returncode == 0 else 0
-    if backend == "docker" and pattern:
-        result = _run(["docker", "exec", CONTAINER, "pkill", "-f", pattern], 15)
-        if result.returncode not in (0, 1):
-            return {"ok": False, "backend": backend, "stopped": stopped, "error": result.stderr.strip() or "pkill failed"}
-        stopped += 1 if result.returncode == 0 else 0
-    return {"ok": True, "backend": backend, "stopped": stopped}
+    return {
+        "ok": True,
+        "backend": backend,
+        "stopped": stopped,
+        "owned_only": True,
+        "pattern_ignored": bool(pattern and not docker_pattern),
+    }
 
 
 def _topic_subscriber_script() -> Path:

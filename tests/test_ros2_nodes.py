@@ -2053,10 +2053,7 @@ def test_launch_stop_is_scoped_to_managed_run(monkeypatch):
 
     assert result["launched"] is False
     assert result["run_id"] == "front_camera"
-    assert captured == {
-        "key": "front_camera",
-        "pattern": "ros2 launch camera_bringup",
-    }
+    assert captured == {"key": "front_camera", "pattern": ""}
 
 
 def test_topic_interface_inspection_reports_rgbd_publishers(monkeypatch):
@@ -2343,8 +2340,26 @@ def test_run_stop_calls_runtime(monkeypatch):
         "executable": "camera_node",
     })
     assert result["running"] is False
-    assert captured == {"key": "camera_driver", "pattern": "ros2 run demo_camera camera_node"}
+    assert captured == {"key": "camera_driver", "pattern": ""}
     assert "stopped 1" in result["report"]
+
+
+def test_native_managed_stop_never_pattern_kills_vendor_process(monkeypatch):
+    calls = []
+    monkeypatch.setattr(rt, "detect_backend", lambda refresh=False: {"backend": "native"})
+    monkeypatch.setattr(rt, "_run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    rt._managed_detached.clear()
+
+    result = rt.stop_ros2_managed(
+        "blacknode_slam",
+        pattern="ros2 launch slam slam.launch.py",
+    )
+
+    assert result["ok"] is True
+    assert result["stopped"] == 0
+    assert result["owned_only"] is True
+    assert result["pattern_ignored"] is True
+    assert calls == []
 
 
 def test_package_executables_lists_registered_commands(monkeypatch):
